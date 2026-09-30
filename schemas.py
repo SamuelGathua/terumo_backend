@@ -8,6 +8,7 @@ class DonorBase(BaseModel):
     tenure_days: int = Field(..., ge=0, description="Days elapsed since first donation.")
     recency_days: int = Field(..., ge=0, description="Days elapsed since last donation.")
     total_donations: int = Field(..., ge=1, description="Cumulative count of donations (frequency).")
+    syphilis_s_co_ratio: Optional[float] = Field(0.5, ge=0.0, description="Syphilis TPPA screening S/CO ratio.")
 
 class DonorCreate(DonorBase):
     retention_status: Optional[int] = Field(1, ge=0, le=1)

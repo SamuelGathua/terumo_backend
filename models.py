@@ -42,6 +42,9 @@ class Donor(Base):
     retention_status: Mapped[int] = mapped_column(
         Integer, nullable=False, default=1, doc="Ground-truth binary classification (1 = Retained, 0 = Lapsed)."
     )
+    syphilis_s_co_ratio: Mapped[float] = mapped_column(
+        Float, nullable=False, default=0.5, doc="Syphilis TPPA screening signal-to-cutoff (S/CO) ratio."
+    )
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime, default=datetime.datetime.utcnow, nullable=False
     )
