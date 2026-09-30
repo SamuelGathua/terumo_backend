@@ -3,7 +3,6 @@ import uuid
 from typing import Optional
 from sqlalchemy import (
     Boolean,
-    Column,
     Date,
     DateTime,
     Float,
@@ -15,84 +14,209 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from database import Base
 
-class DonorProfile(Base):
+class Donor(Base):
     """
-    DonorProfile ORM Model.
-    Represents donor behavioral features (RFM metrics), serological screening indicators,
-    and retention history for machine learning retention classification.
+    1. donors (The Behavioral & Demographic Baseline)
+    Stores unique donor profiles and calculated RFM metrics required by the Random Forest model.
     """
-    __tablename__ = "donor_profiles"
+    __tablename__ = "donors"
 
-    id: Mapped[str] = mapped_column(
+    donor_id: Mapped[str] = mapped_column(
         String(36), primary_key=True, default=lambda: str(uuid.uuid4())
     )
-    recency: Mapped[int] = mapped_column(
+    blood_type: Mapped[str] = mapped_column(
+        String(10), nullable=False, doc="Categorical blood group (A+, O-, B+, AB+, etc.)."
+    )
+    tenure_days: Mapped[int] = mapped_column(
+        Integer, nullable=False, doc="Days elapsed since the donor's first recorded donation."
+    )
+    recency_days: Mapped[int] = mapped_column(
         Integer, nullable=False, doc="Days elapsed since the donor's last donation."
     )
-    frequency: Mapped[int] = mapped_column(
-        Integer, nullable=False, doc="Total lifetime donation count."
+    total_donations: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, doc="Cumulative count of successful donations (frequency)."
     )
-    tenure: Mapped[int] = mapped_column(
-        Integer, nullable=False, doc="Days elapsed since donor's first recorded donation."
-    )
-    blood_type: Mapped[str] = mapped_column(
-        String(10), nullable=False, doc="ABO/Rh blood type (e.g., O+, O-, A+)."
+    retention_probability: Mapped[float] = mapped_column(
+        Float, nullable=False, default=0.5, doc="Predicted probability (0.0 to 1.0) of donor returning."
     )
     retention_status: Mapped[int] = mapped_column(
-        Integer, nullable=False, default=1, doc="Target binary classification (0 = Lapsed, 1 = Retained)."
+        Integer, nullable=False, default=1, doc="Ground-truth binary classification (1 = Retained, 0 = Lapsed)."
+    )
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime, default=datetime.datetime.utcnow, nullable=False
+    )
+
+    # Relationships
+    donation_events: Mapped[list["DonationEvent"]] = relationship(
+        "DonationEvent", back_populates="donor", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (
+        Index("ix_donors_blood_type", "blood_type"),
+        Index("ix_donors_retention_prob", "retention_probability"),
+    )
+
+    def __repr__(self) -> str:
+        return f"<Donor(id='{self.donor_id}', blood_type='{self.blood_type}', recency={self.recency_days}, freq={self.total_donations}, prob={self.retention_probability})>"
+
+
+class DonationEvent(Base):
+    """
+    2. donation_events (The Offline-First Traceability Ledger)
+    Tracks the physical collection event. Primary target for Flutter app asynchronous syncing.
+    """
+    __tablename__ = "donation_events"
+
+    event_id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
+    )
+    donor_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("donors.donor_id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    collection_timestamp: Mapped[datetime.datetime] = mapped_column(
+        DateTime, default=datetime.datetime.utcnow, nullable=False
+    )
+    location_id: Mapped[str] = mapped_column(
+        String(100), nullable=False, doc="Identifier of mobile drive or static collection site."
+    )
+    sync_status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="SYNCED", doc="PENDING | SYNCED"
+    )
+    cold_chain_breach_flag: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, doc="Flagged if transit times or temps between collection and lab exceed safety parameters."
+    )
+
+    # Relationships
+    donor: Mapped["Donor"] = relationship("Donor", back_populates="donation_events")
+    screening_results: Mapped[list["ScreeningResult"]] = relationship(
+        "ScreeningResult", back_populates="donation_event", cascade="all, delete-orphan"
+    )
+    inventory_units: Mapped[list["InventoryUnit"]] = relationship(
+        "InventoryUnit", back_populates="donation_event", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (
+        Index("ix_events_location", "location_id"),
+        Index("ix_events_sync_status", "sync_status"),
+    )
+
+    def __repr__(self) -> str:
+        return f"<DonationEvent(id='{self.event_id}', donor='{self.donor_id}', sync='{self.sync_status}', breach={self.cold_chain_breach_flag})>"
+
+
+class ScreeningResult(Base):
+    """
+    3. screening_results (The AI Diagnostic Layer)
+    Isolates laboratory testing data from collection events for AI screening optimization.
+    """
+    __tablename__ = "screening_results"
+
+    test_id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
+    )
+    event_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("donation_events.event_id", ondelete="CASCADE"), nullable=False, index=True
     )
     syphilis_s_co_ratio: Mapped[float] = mapped_column(
-        Float, nullable=False, default=0.5, doc="Syphilis TPPA screening signal-to-cutoff (S/CO) ratio."
+        Float, nullable=False, doc="Continuous signal-to-cutoff (S/CO) ratio."
+    )
+    dual_reagent_positive: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, doc="Flags if both initial screening reagents reacted (89.6% confirmatory rate)."
+    )
+    tppa_predicted_status: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, doc="ML predicted confirmatory status (e.g. S/CO >= 10.0 -> 98.4% positive)."
     )
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime, default=datetime.datetime.utcnow, nullable=False
     )
 
+    # Relationships
+    donation_event: Mapped["DonationEvent"] = relationship("DonationEvent", back_populates="screening_results")
+
+    def __repr__(self) -> str:
+        return f"<ScreeningResult(test_id='{self.test_id}', s_co={self.syphilis_s_co_ratio}, tppa_pred={self.tppa_predicted_status})>"
+
+
+class InventoryUnit(Base):
+    """
+    4. inventory_units (The Supply Rebalancing Target)
+    Represents physical bags of blood currently in the system, tracking perishability and location.
+    """
+    __tablename__ = "inventory_units"
+
+    unit_id: Mapped[str] = mapped_column(
+        String(100), primary_key=True, doc="Physical barcode identifier on the blood bag."
+    )
+    event_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("donation_events.event_id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    product_type: Mapped[str] = mapped_column(
+        String(50), nullable=False, default="WHOLE_BLOOD", doc="WHOLE_BLOOD | PLATELETS | PRBC | FFP"
+    )
+    expiry_date: Mapped[datetime.datetime] = mapped_column(
+        DateTime, nullable=False, doc="Platelets expire in 5-7 days; RBCs in 35-42 days."
+    )
+    current_facility_id: Mapped[str] = mapped_column(
+        String(100), nullable=False, index=True, doc="Facility where unit is currently stored."
+    )
+    status: Mapped[str] = mapped_column(
+        String(50), nullable=False, default="AVAILABLE", doc="AVAILABLE | IN_TRANSIT | TRANSFUSED | DISCARDED"
+    )
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime, default=datetime.datetime.utcnow, nullable=False
+    )
+
+    # Relationships
+    donation_event: Mapped["DonationEvent"] = relationship("DonationEvent", back_populates="inventory_units")
+
     __table_args__ = (
-        Index("ix_donor_retention", "retention_status"),
-        Index("ix_donor_blood_type", "blood_type"),
+        Index("ix_inventory_status_facility", "status", "current_facility_id"),
+        Index("ix_inventory_expiry", "expiry_date"),
     )
 
     def __repr__(self) -> str:
-        return f"<DonorProfile(id='{self.id}', blood_type='{self.blood_type}', recency={self.recency}, frequency={self.frequency}, retained={self.retention_status})>"
+        return f"<InventoryUnit(barcode='{self.unit_id}', product='{self.product_type}', status='{self.status}', facility='{self.current_facility_id}')>"
 
 
-class TransfusionDemand(Base):
+class TransfusionRequest(Base):
     """
-    TransfusionDemand ORM Model.
-    Captures historical and incoming hospital blood transfusion consumption requests
-    to feed stochastic time-series forecasting (ARIMA / SARIMA) and regional rebalancing.
+    5. transfusion_requests (The Time-Series Demand Engine)
+    Logs daily historical and real-time hospital orders feeding ARIMA/SARIMA forecasting models.
     """
-    __tablename__ = "transfusion_demands"
+    __tablename__ = "transfusion_requests"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    date: Mapped[datetime.date] = mapped_column(Date, nullable=False, index=True)
+    request_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    request_date: Mapped[datetime.datetime] = mapped_column(
+        DateTime, nullable=False, index=True, doc="Timestamp/date of the hospital transfusion order."
+    )
+    requesting_facility_id: Mapped[str] = mapped_column(
+        String(100), nullable=False, index=True, doc="Hospital or clinic identifier placing the order."
+    )
+    blood_type_requested: Mapped[str] = mapped_column(
+        String(10), nullable=False, default="ALL", doc="Requested ABO/Rh blood type or ALL."
+    )
     units_requested: Mapped[int] = mapped_column(
-        Integer, nullable=False, doc="Number of whole blood/component units requested."
+        Integer, nullable=False, doc="Volume of blood units ordered."
     )
-    facility_id: Mapped[str] = mapped_column(
-        String(100), nullable=False, index=True, doc="Unique identifier of requesting hospital or clinic."
-    )
-    blood_type: Mapped[str] = mapped_column(
-        String(10), nullable=False, default="ALL", doc="Target blood group or 'ALL'."
+    urgency_level: Mapped[str] = mapped_column(
+        String(30), nullable=False, default="ROUTINE", doc="ROUTINE | EMERGENCY | MASS_TRANSFUSION"
     )
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime, default=datetime.datetime.utcnow, nullable=False
     )
 
     __table_args__ = (
-        Index("ix_facility_date", "facility_id", "date"),
+        Index("ix_requests_facility_date", "requesting_facility_id", "request_date"),
     )
 
     def __repr__(self) -> str:
-        return f"<TransfusionDemand(facility='{self.facility_id}', date={self.date}, units={self.units_requested})>"
+        return f"<TransfusionRequest(id={self.request_id}, facility='{self.requesting_facility_id}', units={self.units_requested}, urgency='{self.urgency_level}')>"
 
 
 class Facility(Base):
     """
-    Facility ORM Model.
-    Represents healthcare facilities across the regional distribution network
-    (Hospitals, Regional Blood Banks, Cold Storage Depots, Mobile Donor Drives).
+    Facility Network Model.
+    Regional nodes across the network (Hospitals, Blood Hubs, Cold Storage Depots).
     """
     __tablename__ = "facilities"
 
@@ -111,30 +235,7 @@ class Facility(Base):
         return f"<Facility(id='{self.id}', name='{self.name}', region='{self.region}')>"
 
 
-class BloodUnitLedger(Base):
-    """
-    BloodUnitLedger ORM Model.
-    Supports offline-first unit traceability, cold-chain temperature telemetry,
-    and chain-of-custody tracking across transport legs.
-    """
-    __tablename__ = "blood_unit_ledger"
-
-    id: Mapped[str] = mapped_column(
-        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
-    )
-    unit_barcode: Mapped[str] = mapped_column(String(100), unique=True, index=True, nullable=False)
-    blood_type: Mapped[str] = mapped_column(String(10), nullable=False)
-    collection_date: Mapped[datetime.date] = mapped_column(Date, nullable=False)
-    expiry_date: Mapped[datetime.date] = mapped_column(Date, nullable=False)
-    status: Mapped[str] = mapped_column(
-        String(50), nullable=False, default="COLLECTED", doc="COLLECTED | TESTED_SAFE | IN_TRANSIT | TRANSFUSED | EXPIRED"
-    )
-    current_facility_id: Mapped[str] = mapped_column(String(100), nullable=False)
-    temperature_celsius: Mapped[float] = mapped_column(Float, nullable=False, default=4.0)
-    cold_chain_breach: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    last_synced_at: Mapped[datetime.datetime] = mapped_column(
-        DateTime, default=datetime.datetime.utcnow, nullable=False
-    )
-
-    def __repr__(self) -> str:
-        return f"<BloodUnitLedger(barcode='{self.unit_barcode}', type='{self.blood_type}', status='{self.status}')>"
+# Aliases for backward-compatibility with prior code references
+DonorProfile = Donor
+TransfusionDemand = TransfusionRequest
+BloodUnitLedger = InventoryUnit

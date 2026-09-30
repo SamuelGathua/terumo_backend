@@ -1,15 +1,17 @@
 import datetime
+import logging
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 import pandas as pd
 
-from database import get_db
+from database import get_db, get_cached_json, set_cached_json
 import models
 import schemas
 import ml_engine
 
+logger = logging.getLogger("abis.routes")
 router = APIRouter()
 
 # --- Health Check Endpoint ---
@@ -35,16 +37,15 @@ async def predict_donor_retention(
 ):
     """
     Predict donor return probability based on Recency, Frequency, and Tenure (RFM).
-    Uses the trained Random Forest classifier or clinical prior heuristic fallback.
+    Uses the trained Random Forest classifier with heuristic fallback.
     """
-    # If the model is not trained yet, attempt to train on existing database records
     if ml_engine._donor_model is None:
         result = await db.execute(
             select(
-                models.DonorProfile.recency,
-                models.DonorProfile.frequency,
-                models.DonorProfile.tenure,
-                models.DonorProfile.retention_status
+                models.Donor.recency_days.label("recency"),
+                models.Donor.total_donations.label("frequency"),
+                models.Donor.tenure_days.label("tenure"),
+                models.Donor.retention_status
             ).limit(5000)
         )
         records = result.all()
@@ -56,14 +57,14 @@ async def predict_donor_retention(
             ml_engine.train_retention_model(df)
 
     prediction = ml_engine.predict_retention_score(
-        recency=payload.recency,
-        frequency=payload.frequency,
-        tenure=payload.tenure
+        recency=payload.recency_days,
+        frequency=payload.frequency_total,
+        tenure=payload.tenure_days
     )
     return schemas.RetentionPredictionResponse(**prediction)
 
 
-# --- Machine Learning: Demand Forecasting ---
+# --- Machine Learning: Demand Forecasting with Redis Caching ---
 @router.get(
     "/predict/demand",
     response_model=schemas.DemandForecastResponse,
@@ -76,12 +77,18 @@ async def predict_blood_demand(
 ):
     """
     Project daily blood demand for the next N days using ARIMA time-series modeling.
-    Flags critical shortage alerts when demand exceeds the historical baseline by >25%.
+    Results are cached in Redis with a 15-minute (900 seconds) TTL to minimize redundant computation.
     """
+    cache_key = f"abis:demand_forecast:{facility_id}:{horizon_days}"
+    cached_data = await get_cached_json(cache_key)
+    if cached_data:
+        cached_data["cached"] = True
+        return schemas.DemandForecastResponse(**cached_data)
+
     query = (
-        select(models.TransfusionDemand.units_requested)
-        .where(models.TransfusionDemand.facility_id == facility_id)
-        .order_by(models.TransfusionDemand.date.asc())
+        select(models.TransfusionRequest.units_requested)
+        .where(models.TransfusionRequest.requesting_facility_id == facility_id)
+        .order_by(models.TransfusionRequest.request_date.asc())
         .limit(1000)
     )
     result = await db.execute(query)
@@ -92,22 +99,27 @@ async def predict_blood_demand(
         horizon_days=horizon_days,
         facility_id=facility_id
     )
+    forecast_data["cached"] = False
+
+    # Cache for 15 minutes (900 seconds) in Redis
+    await set_cached_json(cache_key, forecast_data, ttl_seconds=900)
+
     return schemas.DemandForecastResponse(**forecast_data)
 
 
-# --- Donor Ledger Endpoints ---
+# --- 1. Donors Endpoints ---
 @router.post(
     "/donors/",
-    response_model=schemas.DonorProfileResponse,
+    response_model=schemas.DonorResponse,
     status_code=status.HTTP_201_CREATED,
-    tags=["Donor Ledger"]
+    tags=["1. Donors Ledger"]
 )
 async def create_donor(
-    donor: schemas.DonorProfileCreate,
+    donor: schemas.DonorCreate,
     db: AsyncSession = Depends(get_db)
 ):
     """Register a new donor profile in the central ledger."""
-    db_donor = models.DonorProfile(**donor.model_dump())
+    db_donor = models.Donor(**donor.model_dump())
     db.add(db_donor)
     await db.commit()
     await db.refresh(db_donor)
@@ -116,8 +128,8 @@ async def create_donor(
 
 @router.get(
     "/donors/",
-    response_model=List[schemas.DonorProfileResponse],
-    tags=["Donor Ledger"]
+    response_model=List[schemas.DonorResponse],
+    tags=["1. Donors Ledger"]
 )
 async def list_donors(
     blood_type: Optional[str] = None,
@@ -126,48 +138,155 @@ async def list_donors(
     db: AsyncSession = Depends(get_db)
 ):
     """List registered donors with pagination and optional blood type filter."""
-    stmt = select(models.DonorProfile).order_by(desc(models.DonorProfile.created_at))
+    stmt = select(models.Donor).order_by(desc(models.Donor.created_at))
     if blood_type:
-        stmt = stmt.where(models.DonorProfile.blood_type == blood_type)
+        stmt = stmt.where(models.Donor.blood_type == blood_type)
     stmt = stmt.offset(offset).limit(limit)
     result = await db.execute(stmt)
     return result.scalars().all()
 
 
-# --- Transfusion Demands Endpoints ---
+# --- 2. Donation Events Endpoints ---
 @router.post(
-    "/transfusion-demands/",
-    response_model=schemas.TransfusionDemandResponse,
+    "/events/",
+    response_model=schemas.DonationEventResponse,
     status_code=status.HTTP_201_CREATED,
-    tags=["Transfusion Demands"]
+    tags=["2. Donation Events"]
 )
-async def create_transfusion_demand(
-    demand: schemas.TransfusionDemandCreate,
+async def record_donation_event(
+    event: schemas.DonationEventCreate,
     db: AsyncSession = Depends(get_db)
 ):
-    """Record a hospital transfusion demand request."""
-    db_demand = models.TransfusionDemand(**demand.model_dump())
-    db.add(db_demand)
+    """Record a blood collection event from a donor drive or clinic."""
+    db_event = models.DonationEvent(**event.model_dump(exclude_unset=True))
+    db.add(db_event)
     await db.commit()
-    await db.refresh(db_demand)
-    return db_demand
+    await db.refresh(db_event)
+    return db_event
 
 
 @router.get(
-    "/transfusion-demands/",
-    response_model=List[schemas.TransfusionDemandResponse],
-    tags=["Transfusion Demands"]
+    "/events/",
+    response_model=List[schemas.DonationEventResponse],
+    tags=["2. Donation Events"]
 )
-async def list_transfusion_demands(
+async def list_donation_events(
+    location_id: Optional[str] = None,
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    db: AsyncSession = Depends(get_db)
+):
+    """List donation collection events."""
+    stmt = select(models.DonationEvent).order_by(desc(models.DonationEvent.collection_timestamp))
+    if location_id:
+        stmt = stmt.where(models.DonationEvent.location_id == location_id)
+    stmt = stmt.offset(offset).limit(limit)
+    result = await db.execute(stmt)
+    return result.scalars().all()
+
+
+# --- 3. Screening Results Endpoints ---
+@router.post(
+    "/screening/",
+    response_model=schemas.ScreeningResultResponse,
+    status_code=status.HTTP_201_CREATED,
+    tags=["3. AI Diagnostic Screening"]
+)
+async def create_screening_result(
+    result_in: schemas.ScreeningResultCreate,
+    db: AsyncSession = Depends(get_db)
+):
+    """Log serological laboratory test result with automated TPPA prediction."""
+    # Clinical heuristic: S/CO >= 10.0 yields 98.4% confirmatory positive
+    auto_tppa = result_in.tppa_predicted_status or (result_in.syphilis_s_co_ratio >= 10.0)
+    data = result_in.model_dump()
+    data["tppa_predicted_status"] = auto_tppa
+
+    db_result = models.ScreeningResult(**data)
+    db.add(db_result)
+    await db.commit()
+    await db.refresh(db_result)
+    return db_result
+
+
+# --- 4. Inventory Units Endpoints ---
+@router.post(
+    "/inventory/",
+    response_model=schemas.InventoryUnitResponse,
+    status_code=status.HTTP_201_CREATED,
+    tags=["4. Inventory Management"]
+)
+async def create_inventory_unit(
+    unit: schemas.InventoryUnitCreate,
+    db: AsyncSession = Depends(get_db)
+):
+    """Register a physical barcode blood unit in the inventory ledger."""
+    db_unit = models.InventoryUnit(**unit.model_dump())
+    db.add(db_unit)
+    await db.commit()
+    await db.refresh(db_unit)
+    return db_unit
+
+
+@router.get(
+    "/inventory/",
+    response_model=List[schemas.InventoryUnitResponse],
+    tags=["4. Inventory Management"]
+)
+async def list_inventory_units(
+    facility_id: Optional[str] = None,
+    product_type: Optional[str] = None,
+    status_filter: Optional[str] = Query("AVAILABLE", alias="status"),
+    limit: int = Query(50, ge=1, le=500),
+    db: AsyncSession = Depends(get_db)
+):
+    """Query inventory units by facility, product type, and status."""
+    stmt = select(models.InventoryUnit)
+    if facility_id:
+        stmt = stmt.where(models.InventoryUnit.current_facility_id == facility_id)
+    if product_type:
+        stmt = stmt.where(models.InventoryUnit.product_type == product_type)
+    if status_filter:
+        stmt = stmt.where(models.InventoryUnit.status == status_filter)
+    stmt = stmt.order_by(models.InventoryUnit.expiry_date.asc()).limit(limit)
+    result = await db.execute(stmt)
+    return result.scalars().all()
+
+
+# --- 5. Transfusion Requests Endpoints ---
+@router.post(
+    "/transfusion-requests/",
+    response_model=schemas.TransfusionRequestResponse,
+    status_code=status.HTTP_201_CREATED,
+    tags=["5. Transfusion Demand Engine"]
+)
+async def create_transfusion_request(
+    request_in: schemas.TransfusionRequestCreate,
+    db: AsyncSession = Depends(get_db)
+):
+    """Record an incoming hospital blood demand order."""
+    db_request = models.TransfusionRequest(**request_in.model_dump())
+    db.add(db_request)
+    await db.commit()
+    await db.refresh(db_request)
+    return db_request
+
+
+@router.get(
+    "/transfusion-requests/",
+    response_model=List[schemas.TransfusionRequestResponse],
+    tags=["5. Transfusion Demand Engine"]
+)
+async def list_transfusion_requests(
     facility_id: Optional[str] = None,
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
     db: AsyncSession = Depends(get_db)
 ):
-    """Query historical hospital transfusion demand records."""
-    stmt = select(models.TransfusionDemand).order_by(desc(models.TransfusionDemand.date))
+    """List historical hospital blood orders."""
+    stmt = select(models.TransfusionRequest).order_by(desc(models.TransfusionRequest.request_date))
     if facility_id:
-        stmt = stmt.where(models.TransfusionDemand.facility_id == facility_id)
+        stmt = stmt.where(models.TransfusionRequest.requesting_facility_id == facility_id)
     stmt = stmt.offset(offset).limit(limit)
     result = await db.execute(stmt)
     return result.scalars().all()
@@ -183,16 +302,12 @@ async def sync_offline_traceability_ledger(
     batch: schemas.OfflineSyncBatch,
     db: AsyncSession = Depends(get_db)
 ):
-    """
-    Asynchronously ingest offline batches captured by the Flutter field app at donor drives
-    or cold transport legs. Flags potential cold-chain breaches automatically.
-    """
+    """Asynchronously ingest offline batches captured by the Flutter field app at donor drives."""
     synced_count = 0
     breaches_flagged = 0
 
     for item in batch.units:
-        # Check if barcode already exists
-        stmt = select(models.BloodUnitLedger).where(models.BloodUnitLedger.unit_barcode == item.unit_barcode)
+        stmt = select(models.InventoryUnit).where(models.InventoryUnit.unit_id == item.unit_barcode)
         existing = (await db.execute(stmt)).scalar_one_or_none()
 
         is_breach = item.cold_chain_breach or item.temperature_celsius > 10.0 or item.temperature_celsius < 1.0
@@ -202,19 +317,14 @@ async def sync_offline_traceability_ledger(
         if existing:
             existing.status = item.status
             existing.current_facility_id = item.current_facility_id
-            existing.temperature_celsius = item.temperature_celsius
-            existing.cold_chain_breach = is_breach
-            existing.last_synced_at = datetime.datetime.utcnow()
         else:
-            new_unit = models.BloodUnitLedger(
-                unit_barcode=item.unit_barcode,
-                blood_type=item.blood_type,
-                collection_date=item.collection_date,
-                expiry_date=item.expiry_date,
-                status=item.status,
+            new_unit = models.InventoryUnit(
+                unit_id=item.unit_barcode,
+                event_id="BATCH-SYNC-EVENT",
+                product_type="WHOLE_BLOOD",
+                expiry_date=datetime.datetime.combine(item.expiry_date, datetime.time.min),
                 current_facility_id=item.current_facility_id,
-                temperature_celsius=item.temperature_celsius,
-                cold_chain_breach=is_breach,
+                status=item.status,
             )
             db.add(new_unit)
         synced_count += 1
@@ -229,7 +339,7 @@ async def sync_offline_traceability_ledger(
     }
 
 
-# --- Network Rebalancing Suggestion Endpoint ---
+# --- Network Rebalancing Suggestion Endpoint with Redis Caching ---
 @router.get(
     "/rebalance/suggestions",
     tags=["Liquidity Rebalancing Engine"]
@@ -237,20 +347,19 @@ async def sync_offline_traceability_ledger(
 async def get_rebalancing_suggestions(
     db: AsyncSession = Depends(get_db)
 ):
-    """
-    Decentralized inventory rebalancing algorithm:
-    Matches facilities experiencing critical shortages with regional hubs holding surplus inventory,
-    optimizing transfer routes to minimize transit decay.
-    """
+    """Decentralized inventory rebalancing algorithm with Redis caching."""
+    cache_key = "abis:rebalance:suggestions"
+    cached = await get_cached_json(cache_key)
+    if cached:
+        cached["cached"] = True
+        return cached
+
     facilities_query = select(models.Facility)
     result = await db.execute(facilities_query)
     facilities = result.scalars().all()
 
     if not facilities:
-        return {
-            "status": "no_facilities_configured",
-            "suggestions": []
-        }
+        return {"status": "no_facilities_configured", "suggestions": []}
 
     shortages = []
     surpluses = []
@@ -265,7 +374,6 @@ async def get_rebalancing_suggestions(
     suggestions = []
     for deficit in shortages:
         if surpluses:
-            # Transfer from largest surplus
             donor_facility = max(surpluses, key=lambda x: x.current_inventory_units)
             transfer_qty = min(
                 donor_facility.current_inventory_units - int(donor_facility.inventory_capacity * 0.5),
@@ -282,9 +390,14 @@ async def get_rebalancing_suggestions(
                     "reason": f"Deficit facility at {round(deficit.current_inventory_units/deficit.inventory_capacity*100)}% capacity. Surplus hub holds {donor_facility.current_inventory_units} units."
                 })
 
-    return {
+    response_data = {
         "network_status": "rebalancing_computed",
         "active_shortage_facilities": len(shortages),
         "active_surplus_facilities": len(surpluses),
-        "recommended_transfers": suggestions
+        "recommended_transfers": suggestions,
+        "cached": False
     }
+
+    # Cache for 5 minutes (300 seconds)
+    await set_cached_json(cache_key, response_data, ttl_seconds=300)
+    return response_data

@@ -1,4 +1,5 @@
 import logging
+import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -35,10 +36,23 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Enable CORS for Next.js frontend and mobile clients
+# Enforce Environment-Specific CORS Security
+ENVIRONMENT = os.getenv("ENVIRONMENT", "development").lower()
+SECRET_KEY = os.getenv("SECRET_KEY", "abis-hackathon-development-key-default")
+
+if ENVIRONMENT == "production":
+    allowed_origins = [
+        os.getenv("FRONTEND_URL", "https://terumo-frontend.vercel.app"),
+        "https://samuelgathua.github.io",
+    ]
+    logger.info(f"Production environment detected. Restricting CORS to: {allowed_origins}")
+else:
+    allowed_origins = ["*"]
+    logger.info("Development environment detected. Permissive CORS enabled for local prototyping.")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -46,7 +60,7 @@ app.add_middleware(
 
 # Mount modular routes
 app.include_router(router, prefix="/api/v1")
-app.include_router(router) # Also allow un-prefixed for direct compatibility
+app.include_router(router) # Direct root mount for convenience
 
 @app.get("/", tags=["System"])
 async def root():
@@ -55,5 +69,6 @@ async def root():
         "event": "Terumo BCT Africa Hackathon 2026",
         "documentation": "/docs",
         "health_check": "/healthz/",
+        "environment": ENVIRONMENT,
         "status": "Operational",
     }

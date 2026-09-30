@@ -9,7 +9,8 @@ The Adaptive Blood Infrastructure System (ABIS) is an intelligent, resilient blo
 
 ### 1. Security & Credentials
 - **Strict Prohibition:** Under no circumstances should `.env` files, production credentials, database passwords, or any file containing plaintext secrets be committed to version control or printed directly in logs.
-- Always use environment variables (e.g., `DATABASE_URL`) with runtime configuration loading.
+- **Authentication Secrets:** Read authentication secrets strictly from `os.environ.get("SECRET_KEY")`.
+- **Environment & CORS Security:** Read the `ENVIRONMENT` environment variable. If set to `production`, enforce strict CORS policies allowing only the designated frontend domain (e.g. `https://terumo-frontend.vercel.app` or domain specified via `FRONTEND_URL`). In development, allow development origins.
 - Ensure all sensitive variables are listed in `.gitignore`.
 
 ### 2. Code Quality & Typing
@@ -19,10 +20,15 @@ The Adaptive Blood Infrastructure System (ABIS) is an intelligent, resilient blo
 
 ### 3. Naming Conventions
 - **Variables & Functions:** Strict `snake_case` (e.g., `units_requested`, `generate_donor_ledger`, `calculate_retention_score`).
-- **Classes & Pydantic/SQLAlchemy Models:** Strict `PascalCase` (e.g., `DonorProfile`, `TransfusionDemand`, `RetentionPredictionRequest`).
-- **Domain Specificity:** Use descriptive, medically accurate domain terminology (e.g., `TransfusionRequest`, `syphilis_s_co_ratio`, `recency_days`, `frequency_total`, `cold_chain_breach`). Avoid generic names like `data`, `item`, or `temp`.
+- **Classes & Pydantic/SQLAlchemy Models:** Strict `PascalCase` (e.g., `Donor`, `DonationEvent`, `ScreeningResult`, `InventoryUnit`, `TransfusionRequest`).
+- **Domain Specificity:** Use descriptive, medically accurate domain terminology (e.g., `TransfusionRequest`, `syphilis_s_co_ratio`, `recency_days`, `total_donations`, `cold_chain_breach_flag`). Avoid generic names like `data`, `item`, or `temp`.
 
-### 4. Machine Learning & Mathematical Reasoning
+### 4. Infrastructure & Caching Guidelines
+- **Database Connectivity:** The environment provides an `ASYNC_DATABASE_URL`. Configure SQLAlchemy's `create_async_engine` using `ASYNC_DATABASE_URL` as primary (normalizing to `postgresql+asyncpg://` if needed, with graceful fallback to `DATABASE_URL` and local SQLite for offline testing).
+- **Redis Integration:** A `REDIS_URL` environment variable is exposed. Implement a resilient Redis client using `redis.asyncio` with defensive fallback when Redis is unreachable locally.
+- **Caching Strategy:** Wrap the `GET /predict/demand` forecasting endpoint and any endpoint querying aggregate inventory levels with a Redis caching layer. Set a Time-To-Live (TTL) of 15 minutes (900 seconds) for demand forecasts to reduce redundant computation on the ARIMA models.
+
+### 5. Machine Learning & Mathematical Reasoning
 - **Chain-of-Thought Reasoning:** Explicitly state and document the mathematical rationale, statistical distributions, and clinical priors behind ML implementations:
   - *Donor Retention:* Modeled via Random Forest on RFM (Recency, Frequency, Tenure) behavioral vectors.
   - *Serology Screening Ratios:* Based on clinical research where Signal-to-Cutoff ($s/co$) $\ge 10$ yields a 98.4% positive predictive value.
