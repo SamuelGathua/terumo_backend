@@ -1,0 +1,16 @@
+venv/
+.env
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+*.db
+*.sqlite
+*.sqlite3
+.DS_Store
+dist/
+build/
+*.egg-info/
+synthetic_donor_ledger.csv
+historical_transfusions.csv
