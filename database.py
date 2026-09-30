@@ -67,9 +67,10 @@ async def init_db() -> None:
         await conn.run_sync(Base.metadata.create_all)
 
 
-# 2. Redis Client & Caching Layer (redis.asyncio)
+# 2. Redis Client & Caching Layer (redis.asyncio) with Resilient Local Memory Fallback
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 _redis_client: Optional[aioredis.Redis] = None
+_local_memory_cache: dict[str, tuple[float, str]] = {}
 
 def get_redis_client() -> Optional[aioredis.Redis]:
     """Obtain or initialize the global asynchronous Redis client."""
@@ -79,8 +80,8 @@ def get_redis_client() -> Optional[aioredis.Redis]:
             _redis_client = aioredis.from_url(
                 REDIS_URL,
                 decode_responses=True,
-                socket_timeout=2.0,
-                socket_connect_timeout=2.0
+                socket_timeout=1.0,
+                socket_connect_timeout=1.0
             )
         except Exception as e:
             logger.warning(f"Could not initialize Redis client connection pool: {e}")
@@ -88,25 +89,38 @@ def get_redis_client() -> Optional[aioredis.Redis]:
     return _redis_client
 
 async def get_cached_json(key: str) -> Optional[Any]:
-    """Retrieve and deserialize a JSON cached entry from Redis."""
+    """Retrieve and deserialize a JSON cached entry from Redis, with local memory fallback."""
     client = get_redis_client()
-    if client is None:
-        return None
-    try:
-        data = await client.get(key)
-        if data:
-            return json.loads(data)
-    except Exception as e:
-        logger.debug(f"Redis cache lookup missed/failed for key '{key}': {e}")
+    if client is not None:
+        try:
+            data = await client.get(key)
+            if data:
+                return json.loads(data)
+        except Exception as e:
+            logger.debug(f"Redis cache lookup unreachable: {e}. Checking memory fallback.")
+
+    # Check local memory fallback
+    import time
+    if key in _local_memory_cache:
+        expire_at, serialized = _local_memory_cache[key]
+        if time.time() < expire_at:
+            return json.loads(serialized)
+        else:
+            del _local_memory_cache[key]
     return None
 
 async def set_cached_json(key: str, value: Any, ttl_seconds: int = 900) -> None:
-    """Serialize and cache a value in Redis with a Time-To-Live (default 15 minutes = 900s)."""
+    """Serialize and cache a value in Redis with TTL (default 15 minutes = 900s), with memory fallback."""
+    import time
+    serialized = json.dumps(value, default=str)
     client = get_redis_client()
-    if client is None:
-        return
-    try:
-        serialized = json.dumps(value, default=str)
-        await client.set(key, serialized, ex=ttl_seconds)
-    except Exception as e:
-        logger.debug(f"Redis cache write failed for key '{key}': {e}")
+    if client is not None:
+        try:
+            await client.set(key, serialized, ex=ttl_seconds)
+            return
+        except Exception as e:
+            logger.debug(f"Redis cache write unreachable: {e}. Storing in memory fallback.")
+
+    # Store in local memory cache
+    _local_memory_cache[key] = (time.time() + ttl_seconds, serialized)
+

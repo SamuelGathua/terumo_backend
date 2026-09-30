@@ -1,7 +1,7 @@
 import datetime
 import logging
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 import pandas as pd
@@ -9,7 +9,7 @@ import pandas as pd
 from database import get_db, get_cached_json, set_cached_json
 import models
 import schemas
-import ml_engine
+from ml_engine import predictive_engine
 
 logger = logging.getLogger("abis.routes")
 router = APIRouter()
@@ -17,15 +17,16 @@ router = APIRouter()
 # --- Health Check Endpoint ---
 @router.get("/healthz/", tags=["System"])
 async def health_check_endpoint():
-    """Health check endpoint to verify service readiness."""
+    """Health check endpoint to verify service and model readiness."""
     return {
         "status": "ok",
         "service": "Adaptive Blood Infrastructure System (ABIS)",
+        "model_trained": predictive_engine.is_trained,
         "timestamp": datetime.datetime.utcnow().isoformat(),
     }
 
 
-# --- Machine Learning: Retention Scoring ---
+# --- Task 1: Predictive Retention Engine ---
 @router.post(
     "/predict/retention",
     response_model=schemas.RetentionPredictionResponse,
@@ -37,74 +38,82 @@ async def predict_donor_retention(
 ):
     """
     Predict donor return probability based on Recency, Frequency, and Tenure (RFM).
-    Uses the trained Random Forest classifier with heuristic fallback.
+    Uses the trained Random Forest classifier with clinical risk tiering.
     """
-    if ml_engine._donor_model is None:
-        result = await db.execute(
-            select(
-                models.Donor.recency_days.label("recency"),
-                models.Donor.total_donations.label("frequency"),
-                models.Donor.tenure_days.label("tenure"),
-                models.Donor.retention_status
-            ).limit(5000)
-        )
-        records = result.all()
-        if len(records) >= 50:
-            df = pd.DataFrame(
-                records,
-                columns=["recency", "frequency", "tenure", "retention_status"]
-            )
-            ml_engine.train_retention_model(df)
+    # Ensure model is initialized if not yet trained
+    if not predictive_engine.is_trained:
+        await predictive_engine.initialize_from_db()
 
-    prediction = ml_engine.predict_retention_score(
-        recency=payload.recency_days,
-        frequency=payload.frequency_total,
-        tenure=payload.tenure_days
+    prediction = predictive_engine.predict_donor_retention(
+        recency_days=payload.recency_days,
+        total_donations=payload.frequency_total,
+        tenure_days=payload.tenure_days
     )
     return schemas.RetentionPredictionResponse(**prediction)
 
 
-# --- Machine Learning: Demand Forecasting with Redis Caching ---
+@router.get(
+    "/predict/retention/metrics",
+    tags=["Predictive Intelligence"]
+)
+async def get_retention_model_metrics():
+    """Retrieve evaluation metrics for the trained Random Forest donor retention model."""
+    if not predictive_engine.is_trained:
+        await predictive_engine.initialize_from_db()
+    return predictive_engine.model_metrics
+
+
+# --- Task 2: Time-Series Demand Forecasting with Redis Caching ---
+@router.get(
+    "/predict/demand/{facility_id}",
+    response_model=schemas.DemandForecastResponse,
+    tags=["Predictive Intelligence"]
+)
+async def predict_blood_demand_by_facility(
+    facility_id: str = Path(..., description="Unique requesting facility ID (e.g. HOSP-NAIROBI-01)"),
+    horizon_days: int = Query(7, ge=1, le=30, description="Forecast horizon in days (default: 7)"),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Project daily blood demand for the next 7 days using ARIMA time-series modeling.
+    Wrapped in an asynchronous Redis cache layer with a 15-minute (900 seconds) TTL.
+    """
+    cache_key = f"abis:demand_forecast:{facility_id}:{horizon_days}"
+
+    # 1. Check Redis Cache first
+    cached_result = await get_cached_json(cache_key)
+    if cached_result:
+        cached_result["cached"] = True
+        logger.info(f"Redis Cache HIT for key '{cache_key}'")
+        return schemas.DemandForecastResponse(**cached_result)
+
+    logger.info(f"Redis Cache MISS for key '{cache_key}'. Executing ARIMA time-series forecast...")
+
+    # 2. Compute ARIMA Forecast via ml_engine
+    forecast_data = await predictive_engine.forecast_facility_demand(
+        facility_id=facility_id,
+        horizon_days=horizon_days
+    )
+    forecast_data["cached"] = False
+
+    # 3. Store JSON result in Redis with a 900-second (15 minutes) TTL
+    await set_cached_json(cache_key, forecast_data, ttl_seconds=900)
+
+    return schemas.DemandForecastResponse(**forecast_data)
+
+
 @router.get(
     "/predict/demand",
     response_model=schemas.DemandForecastResponse,
     tags=["Predictive Intelligence"]
 )
-async def predict_blood_demand(
+async def predict_blood_demand_query(
     facility_id: str = Query("HOSP-NAIROBI-01", description="Hospital / Facility ID"),
     horizon_days: int = Query(7, ge=1, le=30, description="Forecast horizon in days"),
     db: AsyncSession = Depends(get_db)
 ):
-    """
-    Project daily blood demand for the next N days using ARIMA time-series modeling.
-    Results are cached in Redis with a 15-minute (900 seconds) TTL to minimize redundant computation.
-    """
-    cache_key = f"abis:demand_forecast:{facility_id}:{horizon_days}"
-    cached_data = await get_cached_json(cache_key)
-    if cached_data:
-        cached_data["cached"] = True
-        return schemas.DemandForecastResponse(**cached_data)
-
-    query = (
-        select(models.TransfusionRequest.units_requested)
-        .where(models.TransfusionRequest.requesting_facility_id == facility_id)
-        .order_by(models.TransfusionRequest.request_date.asc())
-        .limit(1000)
-    )
-    result = await db.execute(query)
-    units_series = pd.Series([row[0] for row in result.all()])
-
-    forecast_data = ml_engine.forecast_demand_arima(
-        historical_series=units_series,
-        horizon_days=horizon_days,
-        facility_id=facility_id
-    )
-    forecast_data["cached"] = False
-
-    # Cache for 15 minutes (900 seconds) in Redis
-    await set_cached_json(cache_key, forecast_data, ttl_seconds=900)
-
-    return schemas.DemandForecastResponse(**forecast_data)
+    """Query parameter variant of demand forecast endpoint with Redis caching."""
+    return await predict_blood_demand_by_facility(facility_id=facility_id, horizon_days=horizon_days, db=db)
 
 
 # --- 1. Donors Endpoints ---
@@ -197,7 +206,6 @@ async def create_screening_result(
     db: AsyncSession = Depends(get_db)
 ):
     """Log serological laboratory test result with automated TPPA prediction."""
-    # Clinical heuristic: S/CO >= 10.0 yields 98.4% confirmatory positive
     auto_tppa = result_in.tppa_predicted_status or (result_in.syphilis_s_co_ratio >= 10.0)
     data = result_in.model_dump()
     data["tppa_predicted_status"] = auto_tppa
@@ -339,7 +347,7 @@ async def sync_offline_traceability_ledger(
     }
 
 
-# --- Network Rebalancing Suggestion Endpoint with Redis Caching ---
+# --- Network Rebalancing Suggestion Endpoint ---
 @router.get(
     "/rebalance/suggestions",
     tags=["Liquidity Rebalancing Engine"]
@@ -398,6 +406,5 @@ async def get_rebalancing_suggestions(
         "cached": False
     }
 
-    # Cache for 5 minutes (300 seconds)
     await set_cached_json(cache_key, response_data, ttl_seconds=300)
     return response_data

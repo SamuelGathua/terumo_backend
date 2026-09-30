@@ -133,11 +133,17 @@ async def generate_and_seed_donors(n_samples: int = 10000):
         np.random.uniform(0.10, 2.50, size=n_samples)
     ).round(2)
 
-    # Initial retention probability score via non-linear RFM habit calculation
-    freq_factor = 1.0 / (1.0 + np.exp(-0.35 * (total_donations - 3)))
-    recency_factor = np.exp(-0.004 * np.maximum(0, recency_days - 60))
-    tenure_factor = np.clip((tenure_days + 1) / (recency_days + 90), 0.1, 1.0)
-    retention_prob = np.clip(0.5 * freq_factor * recency_factor + 0.3 * tenure_factor + 0.2, 0.05, 0.98).round(4)
+    # Realistic clinical RFM behavioral retention model:
+    # High recency decay penalty, frequency habituation reward, and tenure loyalty
+    noise = np.random.normal(0, 0.35, size=n_samples)
+    logit = (
+        1.2
+        - 0.012 * recency_days
+        + 0.14 * total_donations
+        + 0.0005 * tenure_days
+        + noise
+    )
+    retention_prob = np.clip(1.0 / (1.0 + np.exp(-logit)), 0.02, 0.98).round(4)
     retention_status = (retention_prob >= 0.50).astype(int)
 
     logger.info("Constructing donor records payload...")

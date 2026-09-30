@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from database import init_db
 from routes import router
+from ml_engine import predictive_engine
 
 # Configure logging
 logging.basicConfig(
@@ -15,13 +16,21 @@ logger = logging.getLogger("abis.main")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Lifecycle event handler: initializes tables upon service startup."""
+    """Lifecycle event handler: initializes tables and trains ML models upon startup."""
     logger.info("Initializing database schemas...")
     try:
         await init_db()
-        logger.info("Database schemas initialized successfully.")
+        logger.info("Database schemas initialized.")
     except Exception as e:
         logger.error(f"Database initialization error: {e}")
+
+    logger.info("Initializing Predictive Intelligence Engine from database...")
+    try:
+        metrics = await predictive_engine.initialize_from_db()
+        logger.info(f"Predictive Intelligence Engine online: {metrics.get('status')}")
+    except Exception as e:
+        logger.warning(f"Could not complete model initialization on startup: {e}. Heuristic fallback active.")
+
     yield
     logger.info("ABIS service shutting down.")
 
@@ -36,7 +45,7 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Enforce Environment-Specific CORS Security
+# Enforce Environment-Specific CORS Security per AGENTS.md
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development").lower()
 SECRET_KEY = os.getenv("SECRET_KEY", "abis-hackathon-development-key-default")
 
@@ -69,6 +78,7 @@ async def root():
         "event": "Terumo BCT Africa Hackathon 2026",
         "documentation": "/docs",
         "health_check": "/healthz/",
+        "model_trained": predictive_engine.is_trained,
         "environment": ENVIRONMENT,
         "status": "Operational",
     }
