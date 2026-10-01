@@ -427,13 +427,24 @@ async def trigger_database_migration():
     3. 730-day (2-year) Ornstein-Uhlenbeck daily transfusion requests matching KEPH tier boundaries
     4. Purges all Redis cache keys.
     """
-    from scripts.migrate_all_data import run_full_migration
-    results = await run_full_migration()
     try:
-        await predictive_engine.initialize_from_db()
+        from scripts.migrate_all_data import run_full_migration
+        results = await run_full_migration()
+        try:
+            await predictive_engine.initialize_from_db()
+        except Exception as e:
+            logger.warning(f"Notice re-initializing predictive engine: {e}")
+        return results
     except Exception as e:
-        logger.warning(f"Notice re-initializing predictive engine: {e}")
-    return results
+        import traceback
+        err_msg = str(e)
+        stack = traceback.format_exc()
+        logger.error(f"Migration error: {err_msg}\n{stack}")
+        return {
+            "status": "error",
+            "error": err_msg,
+            "traceback": stack,
+        }
 
 
 @router.post(

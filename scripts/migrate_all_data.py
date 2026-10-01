@@ -71,16 +71,21 @@ def get_async_engine():
 
 async def migrate_facilities_and_demand(session: AsyncSession, engine) -> Dict:
     """Migrate Excel health facilities sheet and generate KEPH tiered transfusion demand."""
+    csv_path = os.path.join(BACKEND_DIR, "data", "kenya-health-facilities-2017_08_02.csv")
     excel_path = os.path.join(BACKEND_DIR, "data", "kenya-health-facilities-2017_08_02.xlsx")
-    if not os.path.exists(excel_path):
+
+    if os.path.exists(csv_path):
+        logger.info(f"Reading Kenyan Facilities Master Sheet from CSV: {csv_path}...")
+        df = pd.read_csv(csv_path)
+    elif os.path.exists(excel_path):
+        logger.info(f"Reading Kenyan Facilities Master Sheet from Excel: {excel_path}...")
+        df = pd.read_excel(excel_path)
+    else:
         alt_path = os.path.join(BACKEND_DIR, "..", "terumo_web", "public", "kenya-health-facilities-2017_08_02.xlsx")
         if os.path.exists(alt_path):
-            excel_path = alt_path
+            df = pd.read_excel(alt_path)
         else:
-            raise FileNotFoundError(f"Facilities Excel file not found at: {excel_path}")
-
-    logger.info(f"Reading Kenyan Facilities Master Sheet from {excel_path}...")
-    df = pd.read_excel(excel_path)
+            raise FileNotFoundError(f"Facilities dataset not found at: {csv_path} or {excel_path}")
     random.seed(42)
 
     primary_anchors = {
