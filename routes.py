@@ -63,6 +63,20 @@ async def get_retention_model_metrics():
     return predictive_engine.model_metrics
 
 
+@router.post(
+    "/predict/retention/train",
+    tags=["Predictive Intelligence"]
+)
+@router.get(
+    "/predict/retention/train",
+    tags=["Predictive Intelligence"]
+)
+async def retrain_donor_retention_model():
+    """Trigger on-demand retraining of the Random Forest donor retention model."""
+    metrics = await predictive_engine.initialize_from_db()
+    return metrics
+
+
 # --- Task 2: Time-Series Demand Forecasting with Redis Caching ---
 @router.get(
     "/predict/demand/{facility_id}",
