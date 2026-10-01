@@ -40,7 +40,7 @@ Mathematical & Chain-of-Thought Documentation:
 
 import datetime
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
@@ -220,6 +220,52 @@ class PredictiveIntelligenceEngine:
 
         return pd.Series([r[0] for r in rows], dtype=float)
 
+    async def get_facility_tier_baseline(self, facility_id: str) -> Tuple[float, float]:
+        """
+        Resolves KEPH tier baseline demand (mu) and stochastic volatility (sigma)
+        strictly according to Kenyan facility tiers:
+        - Level 6: mu in [80, 150] (baseline 115.0, sigma 18.0)
+        - Level 5: mu in [30, 70] (baseline 48.0, sigma 8.5)
+        - Level 4: mu in [5, 20] (baseline 12.0, sigma 3.0)
+        - Level 3: mu in [0, 2] (baseline 1.0, sigma 0.5)
+        - Level 2 / Dispensary: mu = 0.0, sigma = 0.0 (STRICT: no transfusions)
+        - Blood Hub / RBTC: mu = 0.0, sigma = 0.0 (pure storage & distribution)
+        """
+        async with AsyncSessionLocal() as session:
+            stmt = select(models.Facility).where(models.Facility.id == facility_id)
+            fac = (await session.execute(stmt)).scalar_one_or_none()
+
+        if fac is not None:
+            if fac.facility_type == "BLOOD_BANK":
+                return 0.0, 0.0
+            elif fac.facility_type == "DISPENSARY" or fac.inventory_capacity <= 0:
+                return 0.0, 0.0
+            elif fac.facility_type == "HEALTH_CENTRE" or fac.inventory_capacity <= 10:
+                return 1.0, 0.5
+            elif fac.inventory_capacity <= 150:
+                return 12.0, 3.0
+            elif fac.inventory_capacity <= 500:
+                return 48.0, 8.5
+            else:
+                return 115.0, 18.0
+
+        # Heuristic resolution for unseeded or mock facility IDs
+        fid = facility_id.upper()
+        if "HUB" in fid or "BLOOD_BANK" in fid:
+            return 0.0, 0.0
+        elif "DISPENSARY" in fid or "LEVEL_2" in fid:
+            return 0.0, 0.0
+        elif any(k in fid for k in ("22976", "22967", "HEALTH_CENTRE", "LEVEL_3")):
+            return 1.0, 0.5
+        elif any(k in fid for k in ("16201", "17840", "LEVEL_4", "SUB_COUNTY")):
+            return 12.0, 3.0
+        elif any(k in fid for k in ("KISUMU", "MOMBASA", "15288", "11289", "13939", "12438", "LEVEL_5")):
+            return 48.0, 8.5
+        elif any(k in fid for k in ("NAIROBI-01", "13023", "15204", "13194", "13076", "LEVEL_6")):
+            return 115.0, 18.0
+        else:
+            return 12.0, 3.0
+
     async def forecast_facility_demand(
         self,
         facility_id: str,
@@ -232,10 +278,16 @@ class PredictiveIntelligenceEngine:
         today = datetime.date.today()
         series = await self.fetch_facility_historical_demand(facility_id)
 
+        tier_mean, tier_std = await self.get_facility_tier_baseline(facility_id)
+
+        # If zero-demand facility (Level 2 dispensary or Blood Hub depot), return immediate zero projection
+        if tier_mean <= 0.0:
+            return self._stochastic_projection(facility_id, horizon_days, 0.0, 0.0, today)
+
         if len(series) < 14:
-            logger.warning(f"Brief series for {facility_id} ({len(series)} points). Using stochastic projection.")
-            mean_val = float(series.mean()) if len(series) > 0 else 50.0
-            std_val = float(series.std()) if len(series) > 1 else 10.0
+            logger.info(f"Sparse historical series for {facility_id}. Applying KEPH tier baseline (mu={tier_mean}, sigma={tier_std}).")
+            mean_val = float(series.mean()) if len(series) > 0 else tier_mean
+            std_val = float(series.std()) if len(series) > 1 else tier_std
             return self._stochastic_projection(facility_id, horizon_days, mean_val, std_val, today)
 
         try:
@@ -271,7 +323,7 @@ class PredictiveIntelligenceEngine:
             if total_projected > expected_normal * 1.25:
                 pct_surge = round(((total_projected / expected_normal) - 1.0) * 100)
                 alert = (
-                    f"CRITICAL DEFICIT ALERT: Projected 7-day demand ({round(total_projected)} units) "
+                    f"CRITICAL DEFICIT ALERT: Projected {horizon_days}-day demand ({round(total_projected)} units) "
                     f"surges {pct_surge}% above baseline capacity for {facility_id}. "
                     f"Immediate inter-facility inventory rebalancing dispatched."
                 )
@@ -286,10 +338,8 @@ class PredictiveIntelligenceEngine:
             }
 
         except Exception as e:
-            logger.error(f"ARIMA modeling failed for {facility_id}: {e}. Executing stochastic fallback.")
-            mean_val = float(series.mean()) if len(series) > 0 else 50.0
-            std_val = float(series.std()) if len(series) > 1 else 10.0
-            return self._stochastic_projection(facility_id, horizon_days, mean_val, std_val, today)
+            logger.error(f"ARIMA modeling failed for {facility_id}: {e}. Executing stochastic fallback with tier priors.")
+            return self._stochastic_projection(facility_id, horizon_days, tier_mean, tier_std, today)
 
     def _stochastic_projection(
         self,
@@ -299,7 +349,27 @@ class PredictiveIntelligenceEngine:
         std_val: float,
         start_date: datetime.date
     ) -> Dict[str, Any]:
-        """Discrete mean-reverting fallback for sparse histories."""
+        """Discrete mean-reverting fallback matching strict KEPH tier boundaries."""
+        if mean_val <= 0.0 or std_val <= 0.0:
+            # Level 2 / Dispensary & Blood Hub: zero patient demand
+            points = [
+                {
+                    "date": (start_date + datetime.timedelta(days=i + 1)).isoformat(),
+                    "predicted_units": 0.0,
+                    "confidence_lower_95": 0.0,
+                    "confidence_upper_95": 0.0,
+                }
+                for i in range(horizon_days)
+            ]
+            return {
+                "facility_id": facility_id,
+                "forecast_horizon_days": horizon_days,
+                "baseline_daily_mean": 0.0,
+                "stochastic_volatility": 0.0,
+                "forecast": points,
+                "rebalance_alert": None,
+            }
+
         theta = 0.30
         curr = mean_val
         points = []
@@ -307,7 +377,7 @@ class PredictiveIntelligenceEngine:
             target_date = start_date + datetime.timedelta(days=i + 1)
             shock = np.random.normal(0, std_val * 0.4)
             curr = curr + theta * (mean_val - curr) + shock
-            pred = max(1.0, round(float(curr), 1))
+            pred = max(0.0, round(float(curr), 1))
             points.append({
                 "date": target_date.isoformat(),
                 "predicted_units": pred,

@@ -16,13 +16,30 @@ logger = logging.getLogger("abis.main")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Lifecycle event handler: initializes tables and trains ML models upon startup."""
+    """Lifecycle event handler: initializes tables, migrates datasets, and trains ML models upon startup."""
     logger.info("Initializing database schemas...")
     try:
         await init_db()
         logger.info("Database schemas initialized.")
     except Exception as e:
         logger.error(f"Database initialization error: {e}")
+
+    # Automated check: Migrate foundational data sheets to server database if unseeded
+    try:
+        from sqlalchemy import func, select
+        from database import AsyncSessionLocal
+        from models import Facility
+        async with AsyncSessionLocal() as session:
+            fac_count = (await session.execute(select(func.count(Facility.id)))).scalar()
+        if fac_count < 100:
+            logger.info(f"Database unseeded (found {fac_count} facilities). Migrating foundational datasets from data/ folder...")
+            from scripts.migrate_all_data import run_full_migration
+            mig_res = await run_full_migration()
+            logger.info(f"Automated startup data migration completed: {mig_res}")
+        else:
+            logger.info(f"Database verified with {fac_count} facilities online.")
+    except Exception as e:
+        logger.warning(f"Startup migration notice: {e}")
 
     logger.info("Initializing Predictive Intelligence Engine from database...")
     try:

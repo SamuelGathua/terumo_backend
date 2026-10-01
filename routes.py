@@ -408,3 +408,53 @@ async def get_rebalancing_suggestions(
 
     await set_cached_json(cache_key, response_data, ttl_seconds=300)
     return response_data
+
+
+# --- Database Administration & Dataset Migration ---
+@router.post(
+    "/admin/migrate",
+    tags=["Database Administration"]
+)
+@router.get(
+    "/admin/migrate",
+    tags=["Database Administration"]
+)
+async def trigger_database_migration():
+    """
+    Migrates all foundational data sheets from the data/ folder to the PostgreSQL server database:
+    1. kenya-health-facilities-2017_08_02.xlsx (8,932+ Kenyan health facilities with KEPH tiers)
+    2. blood_donor_dataset.csv (10,000 KDE-fitted donors)
+    3. 730-day (2-year) Ornstein-Uhlenbeck daily transfusion requests matching KEPH tier boundaries
+    4. Purges all Redis cache keys.
+    """
+    from scripts.migrate_all_data import run_full_migration
+    results = await run_full_migration()
+    try:
+        await predictive_engine.initialize_from_db()
+    except Exception as e:
+        logger.warning(f"Notice re-initializing predictive engine: {e}")
+    return results
+
+
+@router.post(
+    "/admin/purge-cache",
+    tags=["Database Administration"]
+)
+@router.get(
+    "/admin/purge-cache",
+    tags=["Database Administration"]
+)
+async def purge_redis_cache():
+    """Invalidate all cached demand forecasts and rebalancing suggestions."""
+    from database import get_redis_client
+    try:
+        client = get_redis_client()
+        if client:
+            keys = await client.keys("abis:*")
+            if keys:
+                await client.delete(*keys)
+                return {"status": "cache_purged", "keys_deleted": len(keys)}
+        return {"status": "cache_clean", "keys_deleted": 0}
+    except Exception as e:
+        return {"status": "cache_purge_notice", "error": str(e)}
+
