@@ -240,7 +240,7 @@ async def migrate_donors(session: AsyncSession) -> int:
     retention_status = (retention_prob >= 0.50).astype(int)
 
     donor_records = []
-    base_time = datetime.datetime.now(datetime.timezone.utc)
+    base_time = datetime.datetime.utcnow()
 
     for i in range(n_samples):
         donor_records.append({
@@ -252,7 +252,7 @@ async def migrate_donors(session: AsyncSession) -> int:
             "retention_probability": float(retention_prob[i]),
             "retention_status": int(retention_status[i]),
             "syphilis_s_co_ratio": float(syphilis_ratios[i]),
-            "created_at": base_time - datetime.timedelta(minutes=n_samples - i),
+            "created_at": (base_time - datetime.timedelta(minutes=n_samples - i)).replace(tzinfo=None),
         })
 
     logger.info("Clearing and populating donors table...")
