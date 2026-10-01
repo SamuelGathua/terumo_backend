@@ -249,21 +249,20 @@ class PredictiveIntelligenceEngine:
             else:
                 return 115.0, 18.0
 
-        # Heuristic resolution for unseeded or mock facility IDs
+        # Generic fallback only if an unknown facility ID is not found in the database
         fid = facility_id.upper()
-        if "HUB" in fid or "BLOOD_BANK" in fid:
+        if "BLOOD_BANK" in fid or "HUB" in fid:
             return 0.0, 0.0
         elif "DISPENSARY" in fid or "LEVEL_2" in fid:
             return 0.0, 0.0
-        elif any(k in fid for k in ("22976", "22967", "HEALTH_CENTRE", "LEVEL_3")):
+        elif "HEALTH_CENTRE" in fid or "LEVEL_3" in fid:
             return 1.0, 0.5
-        elif any(k in fid for k in ("16201", "17840", "LEVEL_4", "SUB_COUNTY")):
-            return 12.0, 3.0
-        elif any(k in fid for k in ("KISUMU", "MOMBASA", "15288", "11289", "13939", "12438", "LEVEL_5")):
+        elif "LEVEL_5" in fid:
             return 48.0, 8.5
-        elif any(k in fid for k in ("NAIROBI-01", "13023", "15204", "13194", "13076", "LEVEL_6")):
+        elif "LEVEL_6" in fid:
             return 115.0, 18.0
         else:
+            # Default to Level 4 Sub-County Hospital baseline
             return 12.0, 3.0
 
     async def forecast_facility_demand(
