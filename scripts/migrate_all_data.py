@@ -27,7 +27,7 @@ from typing import Dict, List, Tuple
 import numpy as np
 import pandas as pd
 from sklearn.neighbors import KernelDensity
-from sqlalchemy import delete, func, insert, select
+from sqlalchemy import delete, func, insert, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 # Add parent directory to sys.path
@@ -273,9 +273,20 @@ async def run_full_migration() -> Dict:
     engine = get_async_engine()
     async_session = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
 
-    logger.info("Verifying all database tables exist...")
+    logger.info("Verifying all database tables exist and synchronizing columns...")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # PostgreSQL column compatibility migration
+        try:
+            await conn.execute(text("ALTER TABLE donors ADD COLUMN IF NOT EXISTS syphilis_s_co_ratio FLOAT DEFAULT 0.5;"))
+            await conn.execute(text("ALTER TABLE donors ADD COLUMN IF NOT EXISTS retention_probability FLOAT DEFAULT 0.5;"))
+            await conn.execute(text("ALTER TABLE donors ADD COLUMN IF NOT EXISTS retention_status INTEGER DEFAULT 1;"))
+            await conn.execute(text("ALTER TABLE donors ADD COLUMN IF NOT EXISTS tenure_days INTEGER DEFAULT 365;"))
+            await conn.execute(text("ALTER TABLE donors ADD COLUMN IF NOT EXISTS recency_days INTEGER DEFAULT 60;"))
+            await conn.execute(text("ALTER TABLE donors ADD COLUMN IF NOT EXISTS total_donations INTEGER DEFAULT 1;"))
+            logger.info("Donors table columns synchronized.")
+        except Exception as ddl_err:
+            logger.info(f"Database DDL check notice: {ddl_err}")
 
     async with async_session() as session:
         logger.info("Starting Facilities & Demand Migration...")
