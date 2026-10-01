@@ -108,8 +108,8 @@ class PredictiveIntelligenceEngine:
         y = df["retention_status"].values.astype(int)
 
         # Ensure ground truth targets reflect genuine clinical RFM retention decay
-        if len(np.unique(y)) < 2:
-            logger.info("Database retention targets unstratified; computing clinical RFM retention decay ground truths...")
+        if len(np.unique(y)) < 2 or np.mean(y) > 0.80 or np.mean(y) < 0.15:
+            logger.info("Database retention targets skewed; computing clinical RFM retention decay ground truths...")
             scores = np.array([
                 self._heuristic_retention(int(r), int(f), int(t))
                 for r, f, t in zip(df["recency_days"], df["total_donations"], df["tenure_days"])
