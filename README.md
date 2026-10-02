@@ -1,12 +1,14 @@
 # Adaptive Blood Infrastructure System (ABIS) — Backend Engine
 ### Terumo BCT Africa Hackathon 2026: Building Better Blood Systems for Africa
 
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.142.2-009688.svg?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
-[![Python](https://img.shields.io/badge/Python-3.14-3776AB.svg?logo=python&logoColor=white)](https://python.org)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.110.0-009688.svg?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
+[![Python](https://img.shields.io/badge/Python-3.11+-3776AB.svg?logo=python&logoColor=white)](https://python.org)
 [![SQLAlchemy](https://img.shields.io/badge/SQLAlchemy-2.0-D71F00.svg?logo=sqlalchemy&logoColor=white)](https://www.sqlalchemy.org)
-[![Scikit--Learn](https://img.shields.io/badge/scikit--learn-1.9.1-F7931E.svg?logo=scikitlearn&logoColor=white)](https://scikit-learn.org)
+[![Scikit--Learn](https://img.shields.io/badge/scikit--learn-1.4+-F7931E.svg?logo=scikitlearn&logoColor=white)](https://scikit-learn.org)
+[![Statsmodels](https://img.shields.io/badge/Statsmodels-0.14+-4682B4.svg)](https://www.statsmodels.org)
 [![Redis](https://img.shields.io/badge/Redis-asyncio-DC382D.svg?logo=redis&logoColor=white)](https://redis.io)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1.svg?logo=postgresql&logoColor=white)](https://www.postgresql.org)
+[![Tests](https://img.shields.io/badge/Tests-34%2F34%20Passing-brightgreen.svg)]()
 [![Railway](https://img.shields.io/badge/Deploy-Railway-0B0D0E.svg?logo=railway&logoColor=white)](https://railway.app)
 
 ---
@@ -17,15 +19,19 @@
 
 ## 1. System Overview & The African Healthcare Reality
 
-Blood is an ultra-perishable, non-substitutable therapeutic asset with volatile supply and stochastic, non-negotiable demand. Across sub-Saharan Africa, blood supply systems are severely fragmented:
-- **Inventory Blind Spots:** One central referral hospital experiences tragic stockouts for emergency obstetric hemorrhage, while a regional clinic 45 km away discards expired platelet bags.
-- **Traceability Failures:** When blood units transit through rural zones with intermittent cellular network connectivity, temperature monitoring collapses, compromising cold-chain integrity ($2^\circ\text{C} - 6^\circ\text{C}$ whole blood; $20^\circ\text{C} - 24^\circ\text{C}$ platelets).
-- **High Donor Lapse Rates:** Up to 70% of first-time blood donors never return, due to the lack of personalized, behavioral retention engagement.
+Blood is an ultra-perishable, non-substitutable therapeutic asset with volatile supply and stochastic, non-negotiable demand. Across sub-Saharan Africa, blood supply chains face structural vulnerabilities:
+- **Inventory Blind Spots:** Major referral hospitals experience acute stockouts for postpartum hemorrhage and emergency trauma, while regional clinics 45 km away discard expiring units due to lack of coordination.
+- **Traceability & Cold-Chain Fragility:** When blood units transit through rural zones with intermittent cellular network connectivity, temperature telemetry lapses, risking cold-chain breaches ($2^\circ\text{C} - 6^\circ\text{C}$ whole blood/PRBC; $20^\circ\text{C} - 24^\circ\text{C}$ platelets).
+- **High Donor Lapse Rates:** Up to 70% of first-time blood donors never return, due to lack of personalized, habituation-aware donor recall systems.
 
 ### The Unified ABIS Architecture
-The **Adaptive Blood Infrastructure System (ABIS)** resolves these challenges by bridging two core paradigms into a single unified platform:
-1. **Concept 1: Decentralized Liquidity & Predictive Rebalancing System:** A time-series forecasting engine utilizing **ARIMA(1,1,1)** models and **Monte Carlo mean-reverting stochastic processes** to forecast blood demand 7 days ahead and trigger proactive inter-facility stock transfers.
-2. **Concept 2: Resilient Offline-First Traceability Ledger:** An asynchronous synchronization pipeline that allows mobile field workers (via Flutter mobile apps) to register donors, scan blood bag barcodes, and capture cold-chain temperature telemetry offline, seamlessly syncing with PostgreSQL the moment connectivity is restored.
+The **Adaptive Blood Infrastructure System (ABIS)** unifies these challenges into a single resilient platform:
+1. **Decentralized Liquidity & Predictive Intelligence Engine:**
+   - **Point-in-Time Calibrated Donor Retention:** Modeled from longitudinal donation event streams with purged temporal splits and isotonic probability calibration (ROC AUC: **0.8978**, ECE: **0.0097**).
+   - **Seasonal SARIMAX Demand Forecaster:** Automated ADF stationarity differencing and weekly seasonal terms ($s=7$) providing 7-day lookahead projections with Gaussian 95% confidence intervals and automated critical deficit surge detection.
+2. **Resilient Offline-First Traceability Ledger:**
+   - Field collection events and cold-chain temperature telemetry ingested asynchronously via Flutter mobile clients with idempotent sync states (`PENDING` $\to$ `SYNCED`).
+   - Central PostgreSQL relational persistence with automated schema column migrations and multi-worker joblib model synchronization.
 
 ---
 
@@ -34,24 +40,24 @@ The **Adaptive Blood Infrastructure System (ABIS)** resolves these challenges by
 ```mermaid
 flowchart TB
     subgraph Edge ["1. Field Edge Data Capture (Offline-First)"]
-        A1[Mobile Donor Drives<br/>Offline Data Capture]
-        A2[Blood Bag Barcode Scanning]
-        A3[Transit Cold Box<br/>IoT Temperature Telemetry]
+        A1["Mobile Donor Drives<br/>(Offline Flutter Client)"]
+        A2["Blood Bag Barcode Scanning<br/>(ISBT-128 Compliant)"]
+        A3["Transit Cold Box<br/>IoT Temperature Telemetry"]
     end
 
     subgraph Sync ["2. Asynchronous Ingestion & Ledger Sync"]
-        B1["POST /sync/traceability<br/>(Flutter Async Client)"]
+        B1["POST /api/v1/sync/traceability<br/>(Batch Ingestion Gateway)"]
         B2["Cold-Chain Breach Detector<br/>(Flags T < 1°C or T > 10°C)"]
     end
 
     subgraph CentralEngine ["3. ABIS Central Backend (FastAPI on Railway)"]
-        C1["FastAPI Application Gateway<br/>(CORS Security & Auth Guard)"]
-        C2["Database Engine (database.py)<br/>ASYNC_DATABASE_URL Engine"]
-        C3["Predictive Intelligence Engine (ml_engine.py)<br/>• Random Forest Retention (RFM)<br/>• ARIMA(1,1,1) Demand Forecaster"]
-        C4["Redis Caching Layer (redis.asyncio)<br/>• 15-Min TTL Demand Forecasts<br/>• 5-Min TTL Liquidity Transfers"]
+        C1["FastAPI Application Gateway<br/>(Strict CORS & Admin Auth Guard)"]
+        C2["Database Engine (database.py)<br/>AsyncPG + Automated Column Migration"]
+        C3["Predictive Intelligence Engine (ml_engine.py v2)<br/>• Random Forest + Isotonic Calibration<br/>• SARIMAX(p,d,q)x(P,D,Q,7) Forecaster<br/>• Rolling-Origin Diagnostic Backtester"]
+        C4["Redis Caching Layer (redis.asyncio)<br/>• 15-Min TTL Demand Forecasts<br/>• 60-Sec TTL Overview Dashboard<br/>• Hot Multi-Worker Model Reloading"]
     end
 
-    subgraph Storage ["4. Relational Persistence Ledger (PostgreSQL)"]
+    subgraph Storage ["4. Relational Persistence Ledger (PostgreSQL / SQLite)"]
         D1[(donors)]
         D2[(donation_events)]
         D3[(screening_results)]
@@ -60,15 +66,15 @@ flowchart TB
         D6[(facilities)]
     end
 
-    subgraph FrontendConsumers ["5. Healthcare Consumers & Dashboards"]
-        E1["Next.js Regional Command Center<br/>• Real-time Liquidity Map<br/>• Automated Stock Transfers"]
-        E2["Hospital Transfusion Centers<br/>• 7-Day Demand Lookahead<br/>• Critical Deficit Alerts"]
-        E3["Donor Liaison Coordinator<br/>• SMS / WhatsApp Recall Workflows"]
+    subgraph Consumers ["5. Healthcare Operations & Interfaces"]
+        E1["Next.js Regional Command Center<br/>• Real-time Liquidity Matrix<br/>• Proactive Inter-Hospital Rebalancing"]
+        E2["Hospital Transfusion Centers<br/>• 7-Day Demand Lookahead<br/>• Deficit Surge Alerts"]
+        E3["Donor Liaison Coordinator<br/>• Clinical Risk-Tier Recall SMS/WhatsApp"]
     end
 
-    A1 -->|Local SQLite / Hive| B1
+    A1 -->|Local Storage Cache| B1
     A2 -->|Barcodes & Timestamps| B1
-    A3 -->|Temperature Logs| B1
+    A3 -->|Temperature Telemetry| B1
     B1 --> B2
     B2 --> C1
     C1 --> C2
@@ -83,10 +89,9 @@ flowchart TB
 
 ---
 
-## 3. Phase 1: Architecture Scaffolding & Relational Data Engineering
+## 3. Relational Data Engineering & Schema
 
-### 3.1 The 5 Core PostgreSQL Relational Tables
-The database schema addresses both the physical act of blood collection/traceability and the mathematical demands of predictive modeling:
+The database schema supports both the operational ledger of blood collection and the mathematical data frames required for temporal predictive modeling:
 
 ```mermaid
 erDiagram
@@ -102,9 +107,12 @@ erDiagram
         int tenure_days "Days elapsed since first recorded donation"
         int recency_days "Days elapsed since last donation"
         int total_donations "Cumulative donations count (Frequency)"
-        float retention_probability "Predicted probability score (0.0 to 1.0)"
+        float retention_probability "Calibrated model prediction score"
         int retention_status "Ground truth: 1=Retained, 0=Lapsed"
         float syphilis_s_co_ratio "TPPA screening signal-to-cutoff ratio"
+        string sex "Biological sex (M / F) - defines minimum interval"
+        string donor_type "VOLUNTARY | FAMILY_REPLACEMENT"
+        date date_of_birth "Date of birth (Donor age)"
         datetime created_at "Registration timestamp (UTC)"
     }
 
@@ -114,7 +122,7 @@ erDiagram
         datetime collection_timestamp "Timestamp blood unit was drawn"
         string location_id "Site or mobile drive identifier"
         string sync_status "PENDING | SYNCED (Offline sync handle)"
-        boolean cold_chain_breach_flag "Flagged if transit times or temps breached"
+        boolean cold_chain_breach_flag "Flagged if transit temperature breached"
     }
 
     screening_results {
@@ -122,7 +130,7 @@ erDiagram
         string event_id FK "References donation_events.event_id"
         float syphilis_s_co_ratio "Continuous S/CO ratio"
         boolean dual_reagent_positive "Flags if dual reagents reacted"
-        boolean tppa_predicted_status "Predicted confirmatory outcome"
+        boolean tppa_predicted_status "Predicted confirmatory outcome (ML)"
         datetime created_at "Laboratory processing timestamp"
     }
 
@@ -143,274 +151,174 @@ erDiagram
         string blood_type_requested "Target blood group (O+, A-, or ALL)"
         int units_requested "Volume demanded (strictly >= 0)"
         string urgency_level "ROUTINE | EMERGENCY | MASS_TRANSFUSION"
+        string status "PENDING | FULFILLED | CANCELLED"
         datetime created_at "Order placement timestamp"
     }
 
     facilities {
         string id PK "Unique facility identifier"
         string name "Healthcare facility name"
-        string facility_type "HOSPITAL | BLOOD_BANK | COLD_ROOM"
-        string region "Geographic region (Nairobi, Kisumu, Mombasa)"
+        string facility_type "HOSPITAL | BLOOD_BANK | COLD_ROOM | DISPENSARY"
+        string region "Geographic region (County)"
         float latitude "Geographical latitude"
         float longitude "Geographical longitude"
         int inventory_capacity "Max storage unit capacity"
         int current_inventory_units "Current physical units in stock"
+        int keph_level "Kenya Essential Package for Health Level (1 - 6)"
     }
 ```
 
-### 3.2 Relational Schema Specifications
-| Table Name | Column | Data Type | Constraints | Description |
-| :--- | :--- | :--- | :--- | :--- |
-| **`donors`** | `donor_id` | `VARCHAR(36)` | `PRIMARY KEY` | Unique donor UUID |
-| | `blood_type` | `VARCHAR(10)` | `NOT NULL, INDEX` | ABO/Rh group (`O+`, `O-`, `A+`, `A-`, `B+`, `B-`, `AB+`, `AB-`) |
-| | `tenure_days` | `INTEGER` | `NOT NULL, >= recency_days` | Days since first recorded donation |
-| | `recency_days` | `INTEGER` | `NOT NULL, >= 0` | Days elapsed since last whole blood donation |
-| | `total_donations` | `INTEGER` | `NOT NULL, >= 1` | Cumulative lifetime donation count (habituation) |
-| | `retention_probability` | `FLOAT` | `NOT NULL, [0.0, 1.0]` | Dynamic ML predicted return probability score |
-| | `retention_status` | `INTEGER` | `NOT NULL, {0, 1}` | Ground-truth binary target (1 = Retained, 0 = Lapsed) |
-| | `syphilis_s_co_ratio` | `FLOAT` | `NOT NULL, >= 0.0` | Serological signal-to-cutoff ratio |
-| **`donation_events`** | `event_id` | `VARCHAR(36)` | `PRIMARY KEY` | Collection event UUID |
-| | `donor_id` | `VARCHAR(36)` | `FOREIGN KEY (donors)` | Donor linking reference |
-| | `collection_timestamp` | `TIMESTAMP` | `NOT NULL` | Time blood was drawn at mobile drive |
-| | `location_id` | `VARCHAR(100)` | `NOT NULL, INDEX` | Mobile drive / clinic location code |
-| | `sync_status` | `VARCHAR(20)` | `NOT NULL` | Sync lifecycle: `PENDING` vs `SYNCED` |
-| | `cold_chain_breach_flag`| `BOOLEAN` | `NOT NULL, DEFAULT FALSE` | Flagged if transit temperature exceeds $1^\circ\text{C} - 10^\circ\text{C}$ |
-| **`screening_results`** | `test_id` | `VARCHAR(36)` | `PRIMARY KEY` | Laboratory screening UUID |
-| | `event_id` | `VARCHAR(36)` | `FOREIGN KEY (events)` | Linked collection event |
-| | `syphilis_s_co_ratio` | `FLOAT` | `NOT NULL` | Serological signal-to-cutoff ratio |
-| | `dual_reagent_positive` | `BOOLEAN` | `NOT NULL` | Flags if both initial screening reagents reacted |
-| | `tppa_predicted_status` | `BOOLEAN` | `NOT NULL` | Confirmatory test outcome predicted by ML |
-| **`inventory_units`** | `unit_id` | `VARCHAR(100)` | `PRIMARY KEY` | Physical barcode on blood bag |
-| | `event_id` | `VARCHAR(36)` | `FOREIGN KEY (events)` | Collection event linkage |
-| | `product_type` | `VARCHAR(50)` | `NOT NULL` | `WHOLE_BLOOD`, `PLATELETS`, `PRBC`, `FFP` |
-| | `expiry_date` | `TIMESTAMP` | `NOT NULL, INDEX` | Shelf-life timestamp (Platelets: 5-7d, RBC: 35-42d) |
-| | `current_facility_id` | `VARCHAR(100)` | `NOT NULL, INDEX` | Current physical storage location |
-| | `status` | `VARCHAR(50)` | `NOT NULL` | `AVAILABLE`, `IN_TRANSIT`, `TRANSFUSED`, `DISCARDED` |
-| **`transfusion_requests`**| `request_id` | `INTEGER` | `PRIMARY KEY, AUTO` | Chronological request order ID |
-| | `request_date` | `TIMESTAMP` | `NOT NULL, INDEX` | Timestamp of hospital demand order |
-| | `requesting_facility_id`| `VARCHAR(100)`| `NOT NULL, INDEX` | Hospital placing the blood order |
-| | `blood_type_requested` | `VARCHAR(10)` | `NOT NULL` | Target blood group or `ALL` |
-| | `units_requested` | `INTEGER` | `NOT NULL, >= 0` | Blood units demanded (strictly floored at 0) |
-| | `urgency_level` | `VARCHAR(30)` | `NOT NULL` | `ROUTINE`, `EMERGENCY`, `MASS_TRANSFUSION` |
+### 3.1 Schema Migration Defense
+When deploying against production PostgreSQL, the backend runs `apply_column_migrations()` automatically during `init_db()`. Alternatively, the migrations can be run directly via [`scripts/migrate_columns.sql`](file:///c:/Users/user/Downloads/PUKKA%20SAM/TERUMO%20BCT%20HACKATHON/terumo_backend/scripts/migrate_columns.sql):
 
-### 3.3 Asynchronous Database & Redis Engine Design
-- **`ASYNC_DATABASE_URL` Engine:** [database.py](file:///c:/Users/user/Downloads/PUKKA%20SAM/TERUMO%20BCT%20HACKATHON/terumo_backend/database.py) prioritizes `os.getenv("ASYNC_DATABASE_URL")`. It automatically normalizes legacy `postgres://` or standard `postgresql://` connection strings injected by Railway into `postgresql+asyncpg://`, with a zero-configuration SQLite fallback (`sqlite+aiosqlite:///./blood_supply.db`) for offline development.
-- **Asynchronous Redis Caching:** Uses `redis.asyncio` with connection pool timeouts to guarantee non-blocking I/O. Endpoints accessing compute-heavy ARIMA time-series models wrap queries in a **900-second (15-minute)** TTL cache. If Redis is temporarily unreachable locally, an in-memory TTL fallback seamlessly steps in without interrupting service.
-- **Security & Governance:** Strict enforcement of rules from [AGENTS.md](file:///c:/Users/user/Downloads/PUKKA%20SAM/TERUMO%20BCT%20HACKATHON/terumo_backend/AGENTS.md). In `production`, CORS is restricted to designated frontend origins. Secret keys are loaded strictly from `os.environ.get("SECRET_KEY")`.
+```sql
+-- Safe, idempotent column migrations for PostgreSQL:
+ALTER TABLE donors ADD COLUMN IF NOT EXISTS sex VARCHAR(1) NULL;
+ALTER TABLE donors ADD COLUMN IF NOT EXISTS donor_type VARCHAR(30) NULL;
+ALTER TABLE donors ADD COLUMN IF NOT EXISTS date_of_birth DATE NULL;
+ALTER TABLE facilities ADD COLUMN IF NOT EXISTS keph_level INTEGER NULL;
+ALTER TABLE transfusion_requests ADD COLUMN IF NOT EXISTS status VARCHAR(20) NULL DEFAULT 'PENDING';
+```
 
 ---
 
-## 4. Phase 2: Synthetic Data Generation Pipeline
+## 4. Event-First Synthetic Data Pipeline
 
-To train machine learning algorithms without exposing protected health information (PHI), Phase 2 engineered a realistic, clinically grounded synthetic data pipeline.
+Rather than generating static RFM numbers and computing artificial labels from a formula, the ABIS v2 pipeline simulates **realistic longitudinal donor behavior** from latent behavioral dynamics:
 
 ```mermaid
 flowchart LR
-    subgraph SeedSources ["Seed Repositories"]
-        S1["data/blood_donor_dataset.csv<br/>(Demographics & Donation Counts)"]
-        S2["data/blood-format.csv<br/>(Empirical Probability Baselines)"]
-        S3["Clinical Serology Literature<br/>(Syphilis S/CO Distribution)"]
+    subgraph Latent ["1. Latent Behavioral Traits"]
+        L1["Latent Engagement e ~ Beta(2, 3)"]
+        L2["Donor Demographics<br/>• Sex (F: 30%, M: 70%)<br/>• Donor Type (Voluntary / Family)<br/>• Age ~ N(28, 9)"]
     end
 
-    subgraph KDE_Pipeline ["Task 1: KDE Donor Generation (seed_donors.py)"]
-        K1["Extract RFM Feature Matrix<br/>• Recency Days<br/>• Total Donations (Freq)<br/>• Tenure Days"]
-        K2["Fit Gaussian KDE Model<br/>(Bandwidth = 1.5)"]
-        K3["Draw 10,000 Synthetic Samples"]
-        K4["Enforce Mathematical Constraint<br/>tenure_days >= recency_days"]
-        K5["Inject Clinical Syphilis S/CO<br/>• 5% High Risk (S/CO >= 10.0)<br/>• 95% Safe Baseline (< 10.0)"]
+    subgraph Simulation ["2. Longitudinal Event Generation (donor_simulation.py)"]
+        S1["Return Probability at donation k:<br/>p = σ(base + 3*(e-0.4) + 0.5*min(k-1, 6) + 0.015*(age-28))"]
+        S2["Inter-Donation Interval:<br/>Gap = min_interval[sex] + Gamma(2, 40*(1.6-e)) days"]
+        S3["Hard Invariant Checks:<br/>• Gap >= min_interval (90d M, 120d F)<br/>• tenure_days >= recency_days<br/>• Single donation tenure == recency"]
     end
 
-    subgraph OU_Pipeline ["Task 2: Stochastic Demand Simulation (seed_demand.py)"]
-        O1["Define Facility Baselines (mu)<br/>• HOSP-NAIROBI-01: 88.0<br/>• HOSP-KISUMU-02: 46.0<br/>• CLINIC-MOMBASA-03: 28.0"]
-        O2["Discrete Ornstein-Uhlenbeck Process<br/>D_t = D_{t-1} + θ(μ - D_{t-1}) + σε_t"]
-        O3["Inject Friday/Saturday Weekend<br/>Emergency Trauma Shock (+20%)"]
-        O4["Enforce Floor Constraint<br/>units_requested = max(0, round(D_t))"]
+    subgraph Ingestion ["3. Guarded Seeding (scripts/seed_donors.py)"]
+        G1["assert_safe_target(engine)<br/>(Requires ALLOW_DB_RESET=1 for non-SQLite)"]
+        G2["Bulk-insert 10,000 Donors"]
+        G3["Bulk-insert 15,387 Donation Events<br/>(15,366 SYNCED across 4 years)"]
     end
 
-    subgraph Ingestion ["Database Bulk Insertion"]
-        I1[(donors Table<br/>10,000 Records)]
-        I2[(transfusion_requests Table<br/>2,190 Daily Records)]
-    end
-
-    S1 & S2 --> K1 --> K2 --> K3 --> K4 --> K5 --> I1
-    S3 --> K5
-    O1 --> O2 --> O3 --> O4 --> I2
+    L1 & L2 --> S1 --> S2 --> S3 --> G1 --> G2 & G3
 ```
 
-### 4.1 Task 1: Synthetic Donor Ledger (`scripts/seed_donors.py`)
-- **Kernel Density Estimation (KDE):** Rather than drawing independent Gaussian samples which destroy natural behavioral correlations, a Gaussian KDE model captures the multi-dimensional joint distribution between Recency, Frequency, and Tenure.
-- **Mathematical Consistency:**
-  $$\text{tenure\_days} = \max(\text{tenure\_raw}, \text{recency\_raw} + \Delta t)$$
-  Guarantees 100% logical consistency—a donor can never have donated their last unit before their first recorded donation.
-- **Clinical Serology Priors:** Samples syphilis TPPA screening signal-to-cutoff ($s/co$) ratios such that exactly $5.09\%$ fall into the high-risk zone ($s/co \ge 10.0$), reflecting clinical evidence where $s/co \ge 10.0$ yields a $98.4\%$ positive predictive value.
-
-### 4.2 Task 2: Stochastic Transfusion Demand Simulation (`scripts/seed_demand.py`)
-- **Mean-Reverting Random Walk (Ornstein-Uhlenbeck):**
-  $$D_t = D_{t-1} + \theta(\mu - D_{t-1}) + \sigma \epsilon_t$$
-  Where:
-  - $\mu$ represents daily baseline consumption capacity.
-  - $\theta$ controls the mean-reversion drift velocity back toward baseline equilibrium.
-  - $\sigma$ simulates emergency acute consumption surges (trauma shocks).
-  - $\epsilon_t \sim \mathcal{N}(0, 1)$ is standard Gaussian white noise.
-- **Cyclical Shocks & Non-Negative Floor:** Incorporates weekend trauma multipliers ($+20\%$ on Fridays/Saturdays) and strictly enforces $units\_requested \ge 0$.
-
-### 4.3 Database Audit Verification Output
-```plaintext
-=== ABIS PHASE 2 DATA VERIFICATION & AUDIT ===
-1. Total Synthetic Donors:                                  10,000
-2. Mathematical Constraint Violations (tenure < recency):   0  (100% compliant)
-3. Clinical Syphilis S/CO Distribution:
-   - High-Risk Ratios (>= 10.0):                            509 (5.09%) [Target: ~5%]
-   - Safe Baseline Ratios (< 10.0):                         9,491 (94.91%) [Target: ~95%]
-4. Total Daily Transfusion Requests:                        2,190 records (3 facilities x 730 days)
-5. Non-Negative Floor Constraint (Min Units):               1 unit (No negative values)
-6. Facility Historical Distributions:
-   - CLINIC-MOMBASA-03: 730 days | Daily Mean: 30.43 units | Range: [1 - 61]
-   - HOSP-KISUMU-02:    730 days | Daily Mean: 52.32 units | Range: [15 - 96]
-   - HOSP-NAIROBI-01:   730 days | Daily Mean: 94.67 units | Range: [4 - 182]
-```
+### 4.1 Master Facility Registry & Demand Seeding (`scripts/seed_facilities.py`)
+- Reads the official Kenya Master Health Facility List (8,936 facilities).
+- Maps each facility to its **KEPH Level (1 through 6)** and operational facility type:
+  - **Level 6 (National Referral):** Capacity 800–1,200 units, daily demand $\mu = 80-150$ units.
+  - **Level 5 (County Referral):** Capacity 300–500 units, daily demand $\mu = 30-70$ units.
+  - **Level 4 (Sub-County Hospital):** Capacity 50–150 units, daily demand $\mu = 5-20$ units.
+  - **Level 3 (Health Centre):** Capacity 0–10 units, daily demand $\mu \le 2$ units.
+  - **Level 2 (Dispensary):** Strictly 0 capacity, 0 demand (outpatient only).
+  - **Blood Hubs / RBTCs:** Capacity 2,000–5,000 units, pure storage/distribution.
+- Simulates 730 days of daily transfusion orders via a discrete Ornstein-Uhlenbeck stochastic process with Friday/Saturday emergency trauma multipliers (+20%).
 
 ---
 
-## 5. Phase 3: Machine Learning Engine & Predictive Endpoints
+## 5. Machine Learning & Predictive Intelligence Engine (v2)
 
-Phase 3 operationalizes the data with production-ready AI models in [ml_engine.py](file:///c:/Users/user/Downloads/PUKKA%20SAM/TERUMO%20BCT%20HACKATHON/terumo_backend/ml_engine.py), exposed via asynchronous FastAPI routes in [routes.py](file:///c:/Users/user/Downloads/PUKKA%20SAM/TERUMO%20BCT%20HACKATHON/terumo_backend/routes.py).
+### 5.1 Donor Retention: Calibrated RFM Point-in-Time Pipeline
+The retention model predicts the calibrated probability that a donor returns within the clinical horizon ($H = 180\text{ days}$).
 
 ```mermaid
-sequenceDiagram
-    autonumber
-    actor Client as Web / Mobile Frontend
-    participant Route as FastAPI Router (/predict/demand/{id})
-    participant Redis as Redis Cache (redis.asyncio)
-    participant Engine as Predictive Engine (ml_engine.py)
-    participant DB as PostgreSQL (ASYNC_DATABASE_URL)
-
-    Client->>Route: GET /predict/demand/HOSP-NAIROBI-01
-    Route->>Redis: Check key 'abis:demand_forecast:HOSP-NAIROBI-01:7'
-    alt Cache HIT (Within 15 minutes)
-        Redis-->>Route: Return cached JSON payload
-        Route-->>Client: 200 OK (cached: true, ~1.2ms latency)
-    else Cache MISS / Expired
-        Route->>DB: Query 730 days of historical demand
-        DB-->>Route: Returns chronological units_requested series
-        Route->>Engine: forecast_facility_demand(facility_id, horizon=7)
-        Engine->>Engine: Fit statsmodels ARIMA(1,1,1)
-        Engine->>Engine: Generate 7-day lookahead & 95% Confidence Intervals
-        Engine-->>Route: Return forecast points & shortage alerts
-        Route->>Redis: SETEX key TTL=900s (15 minutes)
-        Route-->>Client: 200 OK (cached: false, ~480ms latency)
-    end
+flowchart TD
+    E[15,366 SYNCED Donation Events] --> C[Generate Multi-Year Cutoff Grid]
+    C --> S[Temporal Purged Split<br/>Train: 74,304 | Calib: 16,461 | Test: 16,981]
+    S --> F[Point-in-Time Feature Construction<br/>• recency_days • total_donations • tenure_days<br/>• donation_rate • sex • donor_type • age]
+    F --> T[Random Forest Classifier<br/>200 Estimators, max_depth=8, min_samples_leaf=50]
+    T --> Cal[Probability Calibration<br/>Isotonic Regression on Holdout Calibration Split]
+    Cal --> P[Calibrated Risk Scoring<br/>• Low Risk >= 0.70<br/>• At Risk 0.40 - 0.69<br/>• High Risk < 0.40]
+    Cal --> Art[Joblib Persistence<br/>model_store/retention_latest.joblib]
+    Art --> MWS[Multi-Worker Auto-Reload<br/>Hot reload on mtime change]
 ```
 
-### 5.1 Task 1: Predictive Retention Engine (Random Forest)
-- **Chain-of-Thought Hyperparameter Justification:**
-  - `n_estimators = 100`: High enough ensemble diversity to eliminate variance from single decision trees without incurring latency penalties ($< 5\text{ms}$ inference latency).
-  - `max_depth = 6`: Restricts tree depth to prevent memorization of noise while preserving complex behavioral interactions (e.g., how frequent donations counteract long recency).
-  - `min_samples_split = 5` & `min_samples_leaf = 2`: Enforces statistically meaningful decision thresholds.
-  - `class_weight = "balanced"`: Guarantees high clinical recall for detecting at-risk lapsed donors.
-
-#### Model Performance Metrics (80/20 Stratified Test Split):
-| Metric | Score | Clinical Implication |
+#### Evaluation Metrics (Purged Temporal Test Period):
+| Metric | Score | Clinical Benchmark & Meaning |
 | :--- | :---: | :--- |
-| **Accuracy** | **98.65%** | High overall fidelity in predicting donor return behavior |
-| **Precision** | **99.88%** | Virtually zero false alarms—prevents unnecessary coordinator calls |
-| **Recall** | **98.57%** | Catches 98.6% of all donors who are on the verge of lapsing |
-| **F1 Score** | **99.22%** | Harmonious balance between precision and clinical sensitivity |
-| **ROC-AUC** | **99.87%** | Near-perfect class separability across confidence thresholds |
+| **ROC-AUC (Calibrated)** | **0.8978** | Superior class separation over entire confidence range |
+| **ROC-AUC (Recency-Only Baseline)** | **0.8327** | Model provides **+6.51%** AUC gain over simple recency thresholding |
+| **ROC-AUC (Heuristic Baseline)** | **0.8575** | Model provides **+4.03%** AUC gain over hand-tuned rules |
+| **PR-AUC** | **0.5966** | Strong precision-recall balance under 15.5% test prevalence |
+| **Expected Calibration Error (ECE)**| **0.0097** | **< 1.0% ECE** — Tier cutoffs (0.40 & 0.70) reflect exact clinical probabilities |
+| **Brier Score** | **0.0863** | Extremely low mean squared probability error |
 
-#### Feature Importance Distribution:
-- **`total_donations` (Frequency):** **51.19%** — The strongest predictor; repeated donations create habitual loyalty.
-- **`recency_days` (Recency):** **44.36%** — Decays motivation; donors who lapse past 180 days rapidly detach.
-- **`tenure_days` (Tenure):** **4.45%** — Moderates habituation over extended multi-year periods.
+---
 
-#### Live Endpoint Demonstration (`POST /predict/retention`):
-```bash
-# 1. Active Committed Donor
-curl -X POST "http://localhost:8000/predict/retention" \
-  -H "Content-Type: application/json" \
-  -d '{"recency_days": 20, "frequency_total": 15, "tenure_days": 720}'
+### 5.2 Time-Series Demand Forecasting (SARIMAX with Single-Layer Redis Caching)
 
-# Response:
-{
-  "retention_probability": 0.9997,
-  "retention_status": 1,
-  "risk_tier": "LOW_RISK",
-  "recommended_action": "Donor actively engaged. Dispatch scheduled SMS reminder for upcoming mobile drive."
-}
+Demand forecasting projects daily units requested over a 7-day lookahead horizon:
+- **Stationarity Differencing ($d$):** Determined via Augmented Dickey-Fuller (ADF) hypothesis test ($\alpha = 0.05$).
+- **Seasonal Model Selection:** Compares `ARIMA(p, d, q)` against weekly-seasonal `SARIMAX(p, d, q)x(P, D, Q, 7)` using Akaike Information Criterion (AIC).
+- **Calendar Alignment:** Forecast series begins on **Nairobi local "today"**, excluding incomplete same-day orders.
+- **Shortage Surge Detection:** Automated alert flags if projected cumulative 7-day demand exceeds the 8-week trailing baseline by $> 25\%$ and excess is $\ge 3$ units.
+- **Single-Layer Caching:** `FORECAST_CACHE_TTL_S` is set to **900 seconds (15 minutes)**, matching Redis TTL and eliminating 6-hour memory cache divergences.
 
-# 2. Lapsed / At-Risk Donor
-curl -X POST "http://localhost:8000/predict/retention" \
-  -H "Content-Type: application/json" \
-  -d '{"recency_days": 450, "frequency_total": 1, "tenure_days": 450}'
+#### Rolling-Origin Backtest Diagnostic Results:
+The rolling-origin backtest evaluates model accuracy across multiple historical forecast origins against a seasonal naive baseline ("same as last week"):
 
-# Response:
-{
-  "retention_probability": 0.0096,
-  "retention_status": 0,
-  "risk_tier": "HIGH_RISK",
-  "recommended_action": "Critical attrition risk. Flag for direct call liaison coordinator with transport subsidy."
-}
-```
+```plaintext
+1. HOSP-NAIROBI-01 (Level 6 National Referral Hospital):
+   - Selected Model:          SARIMAX(1, 0, 1)x(1, 0, 1, 7)
+   - Horizon:                 7 days (4 evaluation origins)
+   - MAE (Model):             11.975 units
+   - MAE (Seasonal Naive):    17.857 units
+   - MASE:                    0.486 (MASE < 1.0 confirms superior accuracy)
+   - Skill vs Seasonal Naive: +32.9% error reduction
+   - 95% Interval Coverage:   96.4% (Forecast confidence intervals well-calibrated)
 
-### 5.2 Task 2: Time-Series Demand Forecasting (ARIMA with Redis Caching)
-- **Time-Series Formulation:** Evaluates 2 years (730 daily data points) per facility using `statsmodels.tsa.arima.model.ARIMA(order=(1, 1, 1))`.
-- **Confidence Intervals:** Generates $95\%$ forecast bounds $[lower_{95}, upper_{95}]$ enabling blood bank managers to prepare optimal buffer stock.
-- **Shortage Alert Logic:** If projected 7-day cumulative demand exceeds the facility baseline by $> 25\%$, the endpoint flags an automated `CRITICAL DEFICIT ALERT` directing inter-facility transfers.
-- **Redis Caching:** Response cached in Redis with a 900-second (15-minute) TTL using cache key `abis:demand_forecast:{facility_id}:{horizon_days}`.
-
-#### Live Endpoint Demonstration (`GET /predict/demand/HOSP-NAIROBI-01`):
-```json
-{
-  "facility_id": "HOSP-NAIROBI-01",
-  "forecast_horizon_days": 7,
-  "baseline_daily_mean": 97.53,
-  "stochastic_volatility": 15.69,
-  "forecast": [
-    { "date": "2026-10-01", "predicted_units": 90.8, "confidence_lower_95": 54.1, "confidence_upper_95": 127.5 },
-    { "date": "2026-10-02", "predicted_units": 93.1, "confidence_lower_95": 48.3, "confidence_upper_95": 137.9 },
-    { "date": "2026-10-03", "predicted_units": 94.7, "confidence_lower_95": 46.4, "confidence_upper_95": 143.0 },
-    { "date": "2026-10-04", "predicted_units": 95.7, "confidence_lower_95": 45.9, "confidence_upper_95": 145.6 },
-    { "date": "2026-10-05", "predicted_units": 96.4, "confidence_lower_95": 46.0, "confidence_upper_95": 146.9 },
-    { "date": "2026-10-06", "predicted_units": 96.9, "confidence_lower_95": 46.3, "confidence_upper_95": 147.6 },
-    { "date": "2026-10-07", "predicted_units": 97.2, "confidence_lower_95": 46.5, "confidence_upper_95": 147.9 }
-  ],
-  "rebalance_alert": null,
-  "cached": true
-}
+2. HOSP-KISUMU-02 (Level 5 County Referral Hospital):
+   - Selected Model:          SARIMAX(1, 0, 1)x(1, 0, 1, 7)
+   - Horizon:                 7 days (4 evaluation origins)
+   - MAE (Model):             7.535 units
+   - MAE (Seasonal Naive):    12.036 units
+   - MASE:                    0.613
+   - Skill vs Seasonal Naive: +37.4% error reduction
+   - 95% Interval Coverage:   96.4%
 ```
 
 ---
 
 ## 6. Complete API Reference
 
-| HTTP Method | Route | Tag | Description |
-| :--- | :--- | :--- | :--- |
-| `GET` | `/healthz/` | `System` | Health check & ML model readiness status |
-| `GET` | `/` | `System` | Root metadata, docs link, and environment |
-| `POST` | `/predict/retention` | `Predictive Intelligence` | Predict donor return probability & risk tier via Random Forest |
-| `GET` | `/predict/retention/metrics` | `Predictive Intelligence` | Inspect Random Forest training metrics (Accuracy, ROC-AUC, F1) |
-| `GET` | `/predict/demand/{facility_id}` | `Predictive Intelligence` | 7-day ARIMA blood demand forecast with 15-min Redis cache |
-| `GET` | `/predict/demand` | `Predictive Intelligence` | Query parameter variant of demand forecasting |
-| `POST` | `/donors/` | `1. Donors Ledger` | Register a new donor in the central ledger |
-| `GET` | `/donors/` | `1. Donors Ledger` | Paginated donor ledger with blood type filter |
-| `POST` | `/events/` | `2. Donation Events` | Record a blood collection event from mobile drive |
-| `GET` | `/events/` | `2. Donation Events` | List collection events by location |
-| `POST` | `/screening/` | `3. AI Diagnostic Screening` | Record serological screening with automated TPPA prediction |
-| `POST` | `/inventory/` | `4. Inventory Management` | Register physical barcode blood units with shelf-life tracking |
-| `GET` | `/inventory/` | `4. Inventory Management` | Query stock by facility, product type, and status |
-| `POST` | `/transfusion-requests/`| `5. Transfusion Demands` | Place hospital transfusion order |
-| `GET` | `/transfusion-requests/` | `5. Transfusion Demands` | Query historical hospital blood requests |
-| `POST` | `/sync/traceability` | `Resilient Offline Sync` | Ingest offline batches from Flutter app with cold-chain breach flag |
-| `GET` | `/rebalance/suggestions`| `Liquidity Rebalancing` | Inter-facility transfer optimization matching surplus to deficit |
+### Predictive Intelligence
+| Method | Route | Description |
+| :--- | :--- | :--- |
+| `POST` | `/api/v1/predict/retention` | Predict calibrated return probability, risk tier, days until eligible, and action |
+| `GET` | `/api/v1/predict/retention/metrics` | Inspect Random Forest training metrics, baselines, and calibration stats |
+| `POST` | `/api/v1/predict/retention/train` | Trigger retraining (`?background=true` supported, concurrency locked, admin protected) |
+| `GET` | `/api/v1/predict/demand/{facility_id}` | 7-day SARIMAX demand forecast with 15-min Redis cache and 95% confidence intervals |
+
+### Operational & Traceability Ledger
+| Method | Route | Description |
+| :--- | :--- | :--- |
+| `GET` | `/healthz/` | System health check and model readiness flag |
+| `GET` | `/overview/summary` | Consolidated dashboard state with 60s Redis caching |
+| `POST` | `/api/v1/sync/traceability` | Ingest offline collection event batches from mobile clients with cold-chain breach detection |
+| `GET` | `/api/v1/donors/` | Paginated donor registry with blood group filtering |
+| `POST` | `/api/v1/donors/` | Register a new donor profile |
+| `GET` | `/api/v1/events/` | Query donation events by location and sync status |
+| `POST` | `/api/v1/events/` | Log physical blood collection event |
+| `POST` | `/api/v1/screening/` | Record laboratory serology test with automated ML TPPA prediction |
+| `GET` | `/api/v1/inventory/` | Query physical blood units by facility, product type, and status |
+| `POST` | `/api/v1/inventory/` | Barcode blood unit check-in with expiry date |
+| `GET` | `/api/v1/transfusion-requests/`| List chronological transfusion demand orders |
+| `POST` | `/api/v1/transfusion-requests/`| Hospital blood order placement |
+| `GET` | `/api/v1/rebalance/suggestions`| Inter-facility inventory rebalancing matrix matching surplus to deficit |
 
 ---
 
 ## 7. Local Setup & Execution Guide
 
 ### 7.1 Prerequisites
-- Python 3.11+ (Tested on Python 3.14)
+- Python 3.11+
 - Git
-- Optional: Local Redis server (runs seamlessly with automatic in-memory fallback if Redis is offline)
+- Virtual environment (`venv`)
 
 ### 7.2 Installation
 ```bash
@@ -420,49 +328,77 @@ cd terumo_backend
 
 # Create and activate virtual environment
 python -m venv venv
-# On Windows:
+
+# Windows:
 .\venv\Scripts\activate
-# On Linux/macOS:
+# Linux / macOS:
 source venv/bin/activate
 
 # Install dependencies
 pip install -r requirements.txt
 ```
 
-### 7.3 Seed the Relational Database
+### 7.3 Seed Database
 ```bash
-# Generate 10,000 synthetic donor profiles via KDE
+# Set ALLOW_DB_RESET=1 to authorize database initialization
+export ALLOW_DB_RESET=1     # Linux/macOS
+$env:ALLOW_DB_RESET="1"    # Windows PowerShell
+
+# Seed 10,000 donors and 4-year longitudinal event stream
 python scripts/seed_donors.py
 
-# Generate 2 years of stochastic transfusion demand orders
-python scripts/seed_demand.py
+# Seed 8,936 facilities from Kenya Master Facility List and demand histories
+python scripts/seed_facilities.py
 ```
 
-### 7.4 Start the FastAPI Server
+### 7.4 Train Models & Run Server
 ```bash
+# Start server with live reload
 uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 ```
-Open **[http://localhost:8000/docs](http://localhost:8000/docs)** to explore the interactive Swagger UI.
+- Interactive Swagger Documentation: **[http://localhost:8000/docs](http://localhost:8000/docs)**
+- Health Check: **[http://localhost:8000/healthz/](http://localhost:8000/healthz/)**
+
+### 7.5 Run Test Suite
+```bash
+# Execute all 34 unit and integration tests
+pytest tests/ -v
+```
 
 ---
 
-## 8. Deployment to Railway
+## 8. Environment Variables & Railway Deployment
 
-The backend is configured for deployment on Railway:
-1. **Repository:** Link `https://github.com/SamuelGathua/terumo_backend`.
-2. **PostgreSQL Database:** Provision a PostgreSQL instance on Railway and set:
+### 8.1 Configuration Variables
+| Variable | Default | Purpose |
+| :--- | :--- | :--- |
+| `ASYNC_DATABASE_URL` | `sqlite+aiosqlite:///./blood_supply.db` | Primary async database connection (PostgreSQL / SQLite) |
+| `REDIS_URL` | `redis://localhost:6379/0` | Asynchronous Redis cache connection string |
+| `ENVIRONMENT` | `development` | Set to `production` to enforce strict CORS and admin auth |
+| `SECRET_KEY` | Development key | Secret key required for admin endpoints in production |
+| `FRONTEND_URL` | `https://terumo-frontend.vercel.app` | Designated production CORS origin |
+| `ABIS_DATA_SOURCE` | `synthetic` | Set to `real` when connecting to live Kenyan hospital data |
+| `ABIS_MODEL_DIR` | `./model_store` | Path for joblib model persistence (mount to persistent volume) |
+| `ALLOW_DB_RESET` | (unset) | Must be explicitly `1` to allow destructive seeder executions |
+
+### 8.2 Railway Production Deployment
+1. Provision a **PostgreSQL** instance and a **Redis** instance in your Railway project.
+2. Connect your GitHub repository to Railway.
+3. Add the following environment variables in the Railway dashboard:
    - `ASYNC_DATABASE_URL` = `${{Postgres.DATABASE_URL}}`
-3. **Redis Service:** Provision a Redis instance on Railway and set:
    - `REDIS_URL` = `${{Redis.REDIS_URL}}`
-4. **Environment:** Set `ENVIRONMENT` = `production`, `SECRET_KEY` = `<strong-secret-key>`.
-5. **Procfile:** Railway automatically detects `Procfile` (`web: uvicorn main:app --host 0.0.0.0 --port $PORT`).
+   - `ENVIRONMENT` = `production`
+   - `SECRET_KEY` = `<secure-random-token>`
+   - `ABIS_DATA_SOURCE` = `synthetic`
+4. Deploy: Railway builds using `Procfile` (`web: uvicorn main:app --host 0.0.0.0 --port $PORT`).
+5. **Health Checks:** On startup, the service loads the existing model in $< 100\text{ms}$ or dispatches retraining in the background, preventing cold-start healthcheck timeouts.
 
 ---
 
-## 9. Team & Hackathon Submission Details
+## 9. Submission Metadata
 
-- **Hackathon:** Terumo BCT Africa Hackathon 2026: Building Better Blood Systems for Africa
-- **Submission Date:** October 2026
+- **Event:** Terumo BCT Africa Hackathon 2026: Building Better Blood Systems for Africa
+- **Date:** October 2026
 - **Backend Repository:** [SamuelGathua/terumo_backend](https://github.com/SamuelGathua/terumo_backend)
 - **Frontend Repository:** [SamuelGathua/terumo_frontend](https://github.com/SamuelGathua/terumo_frontend)
 - **Lead Developer:** Samuel Gathua
