@@ -158,3 +158,16 @@ async def delete_cached_keys(*keys: str) -> None:
     for key in keys:
         _local_memory_cache.pop(key, None)
 
+
+# 3. Kenya Regional Administration Mapping for Regional Analytics & Dashboard Filters
+KENYA_REGIONS: dict[str, list[str]] = {
+    "Coast": ["Mombasa", "Kwale", "Kilifi", "Tana River", "Lamu", "Taita-Taveta", "Taita Taveta"],
+    "North Eastern": ["Garissa", "Wajir", "Mandera"],
+    "Eastern": ["Marsabit", "Isiolo", "Meru", "Tharaka-Nithi", "Tharaka Nithi", "Embu", "Kitui", "Machakos", "Makueni"],
+    "Central": ["Nyandarua", "Nyeri", "Kirinyaga", "Murang'a", "Muranga", "Kiambu"],
+    "Rift Valley": ["Turkana", "West Pokot", "Samburu", "Trans-Nzoia", "Trans Nzoia", "Uasin Gishu", "Elgeyo-Marakwet", "Elgeyo Marakwet", "Nandi", "Baringo", "Laikipia", "Nakuru", "Narok", "Kajiado", "Kericho", "Bomet"],
+    "Western": ["Kakamega", "Vihiga", "Bungoma", "Busia"],
+    "Nyanza": ["Siaya", "Kisumu", "Homa Bay", "Migori", "Kisii", "Nyamira"],
+    "Nairobi": ["Nairobi"],
+}
+
