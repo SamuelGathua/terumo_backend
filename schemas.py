@@ -41,6 +41,14 @@ class DonationEventCreate(DonationEventBase):
 class DonationEventResponse(DonationEventBase):
     event_id: str
     collection_timestamp: datetime.datetime
+    location: Optional[str] = None
+    field_lead: Optional[str] = None
+    officer: Optional[str] = None
+    barcode_range: Optional[str] = None
+    temperature: Optional[float] = 4.2
+    breach: Optional[bool] = False
+    is_offline_upload: Optional[bool] = False
+    units_count: Optional[int] = None
 
     class Config:
         from_attributes = True
@@ -78,6 +86,10 @@ class InventoryUnitCreate(InventoryUnitBase):
 
 class InventoryUnitResponse(InventoryUnitBase):
     created_at: datetime.datetime
+    blood_type: Optional[str] = "O+"
+    temperature: Optional[float] = 4.0
+    is_agitated: Optional[bool] = None
+    current_facility: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -148,3 +160,23 @@ class OfflineSyncBatch(BaseModel):
     device_id: str
     sync_timestamp: datetime.datetime
     units: List[BloodUnitSyncItem]
+
+# --- Flutter Batch Ingestion Schemas (POST /events/batch) ---
+class BarcodeRecordItem(BaseModel):
+    barcode: str = Field(..., description="Unique barcode ID e.g. KE-BC-2026-0891")
+    blood_type: str = Field("O+", description="Blood group ABO/Rh")
+    product_type: str = Field("WHOLE_BLOOD", description="WHOLE_BLOOD | PLATELETS | PRBC | FFP")
+    expiry_date: Optional[datetime.datetime] = None
+    facility: Optional[str] = "Transit Box #TB-04 (Machakos)"
+    temperature: Optional[float] = 4.2
+    status: Optional[str] = "AVAILABLE"
+    is_agitated: Optional[bool] = None
+
+class BatchManifestUpload(BaseModel):
+    batch_id: str = Field(..., description="Unique batch ID, e.g. EVT-MCH-9021")
+    field_lead: str = Field(..., description="Field lead nurse or officer, e.g. Nurse J. Mutua")
+    location: str = Field(..., description="Mobile drive location, e.g. Machakos Mobile Donor Drive (Site 2)")
+    timestamp: datetime.datetime = Field(default_factory=datetime.datetime.utcnow)
+    temperature: float = Field(4.2, description="Transit telemetry temperature in Celsius")
+    cold_chain_breach: bool = Field(False, description="Flag for temperature excursion")
+    barcode_records: List[BarcodeRecordItem] = Field(..., description="List of unit barcode records from remote drive")

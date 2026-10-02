@@ -124,3 +124,15 @@ async def set_cached_json(key: str, value: Any, ttl_seconds: int = 900) -> None:
     # Store in local memory cache
     _local_memory_cache[key] = (time.time() + ttl_seconds, serialized)
 
+async def delete_cached_keys(*keys: str) -> None:
+    """Invalidate specific keys from Redis and local memory cache."""
+    client = get_redis_client()
+    if client is not None:
+        try:
+            for key in keys:
+                await client.delete(key)
+        except Exception as e:
+            logger.debug(f"Redis cache delete unreachable: {e}")
+    for key in keys:
+        _local_memory_cache.pop(key, None)
+
