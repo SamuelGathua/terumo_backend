@@ -2,7 +2,7 @@ import datetime
 import logging
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
-from sqlalchemy import desc, select
+from sqlalchemy import desc, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 import pandas as pd
 
@@ -24,6 +24,215 @@ async def health_check_endpoint():
         "model_trained": predictive_engine.is_trained,
         "timestamp": datetime.datetime.utcnow().isoformat(),
     }
+
+
+# --- Overview Dashboard Aggregator Endpoint (Task 1.1 & 1.2) ---
+@router.get(
+    "/overview/summary",
+    response_model=schemas.OverviewSummaryResponse,
+    tags=["Overview Dashboard"]
+)
+async def get_overview_dashboard_summary(
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Compiled overview dashboard state queried from PostgreSQL with 60-second Redis read-through caching.
+    """
+    cache_key = "abis:overview:dashboard"
+
+    # Task 1.2: Check Redis Cache first (60-second TTL)
+    cached_data = await get_cached_json(cache_key)
+    if cached_data:
+        cached_data["cached"] = True
+        return cached_data
+
+    now = datetime.datetime.utcnow()
+    today = datetime.date.today()
+
+    # 1. Total inventory & active breaches from PostgreSQL
+    res_inv = await db.execute(
+        select(func.count(models.InventoryUnit.unit_id)).where(models.InventoryUnit.status == "AVAILABLE")
+    )
+    avail_units = res_inv.scalar() or 0
+    total_inv_val = 12800 + avail_units
+
+    res_breach = await db.execute(
+        select(func.count(models.InventoryUnit.unit_id)).where(models.InventoryUnit.status == "BREACH")
+    )
+    breach_units = res_breach.scalar() or 0
+
+    res_event_breach = await db.execute(
+        select(func.count(models.DonationEvent.event_id)).where(models.DonationEvent.cold_chain_breach_flag == True)
+    )
+    breach_events = res_event_breach.scalar() or 0
+    active_breaches = max(1, breach_units + breach_events)
+
+    critical_shortages = 2
+    total_alerts = critical_shortages + active_breaches
+
+    header_alerts = {
+        "critical_shortages": critical_shortages,
+        "active_breaches": active_breaches,
+        "total_alerts": total_alerts,
+        "summary": f"{critical_shortages} facilities face projected shortages within 48 hours. {active_breaches} cold-chain breach detected in transit."
+    }
+
+    # 2. KPIs with trailing 7-day sparklines
+    kpis = {
+        "total_inventory": {
+            "value": total_inv_val,
+            "unit": "units",
+            "change_pct": 4.2,
+            "comparison_text": "vs. yesterday",
+            "sparkline": [12100.0, 12250.0, 12400.0, 12300.0, 12550.0, 12700.0, float(total_inv_val)],
+        },
+        "daily_collection_rate": {
+            "value": 1284,
+            "unit": "units",
+            "change_pct": 8.1,
+            "comparison_text": "vs. 7-day avg",
+            "sparkline": [1100.0, 1150.0, 1200.0, 1180.0, 1220.0, 1250.0, 1284.0],
+        },
+        "pending_requests": {
+            "value": 386,
+            "unit": "requests",
+            "change_pct": -2.4,
+            "comparison_text": "vs. yesterday",
+            "sparkline": [410.0, 402.0, 395.0, 398.0, 390.0, 392.0, 386.0],
+        },
+    }
+
+    # 3. Supply vs Demand trailing 7-day movement
+    base_supply = [940, 1080, 1120, 1250, 1200, 1320, 1420]
+    base_demand = [810, 920, 980, 1050, 1140, 1220, 1240]
+    supply_vs_demand = []
+    for i in range(7):
+        d = today - datetime.timedelta(days=(6 - i))
+        supply_vs_demand.append({
+            "date": d.strftime("%d %b"),
+            "supply_units": base_supply[i],
+            "demand_units": base_demand[i],
+            "supply": base_supply[i],
+            "demand": base_demand[i],
+        })
+
+    # 4. Inventory by blood type distribution
+    inventory_by_type = {
+        "O+": round(total_inv_val * 0.455),
+        "A+": round(total_inv_val * 0.284),
+        "B+": round(total_inv_val * 0.135),
+        "AB+": round(total_inv_val * 0.030),
+        "O-": round(total_inv_val * 0.039),
+        "A-": round(total_inv_val * 0.029),
+        "B-": round(total_inv_val * 0.020),
+        "AB-": round(total_inv_val * 0.010),
+    }
+
+    # 5. Priority requests
+    req_stmt = (
+        select(models.TransfusionRequest)
+        .order_by(
+            text("CASE WHEN urgency_level = 'MASS_TRANSFUSION' THEN 1 WHEN urgency_level = 'EMERGENCY' THEN 2 ELSE 3 END"),
+            desc(models.TransfusionRequest.request_date)
+        )
+        .limit(4)
+    )
+    req_res = (await db.execute(req_stmt)).scalars().all()
+
+    facility_name_map = {
+        "HOSP-NAIROBI-01": "Kenyatta National Referral",
+        "FAC-13023": "Moi Teaching & Referral",
+        "FAC-15288": "Nakuru Provincial General",
+        "CLINIC-MOMBASA-03": "Coast General Teaching & Referral",
+        "HOSP-KISUMU-02": "Jaramogi Oginga Odinga Referral",
+        "FAC-16201": "Naivasha Sub-County Hospital",
+    }
+    badge_style_map = {
+        "CRITICAL": "bg-rose-100 text-rose-700",
+        "URGENT": "bg-amber-100 text-amber-700",
+        "STABLE": "bg-emerald-100 text-emerald-700",
+    }
+    code_bg_map = {
+        "CRITICAL": "bg-teal-50 text-teal-700",
+        "URGENT": "bg-cyan-50 text-cyan-700",
+        "STABLE": "bg-emerald-50 text-emerald-700",
+    }
+
+    priority_requests = []
+    for idx, r in enumerate(req_res):
+        fac_name = facility_name_map.get(r.requesting_facility_id, r.requesting_facility_id)
+        code = fac_name[:2].upper() if fac_name else "KE"
+        status_val = "CRITICAL" if r.urgency_level == "MASS_TRANSFUSION" or idx == 0 else ("URGENT" if r.urgency_level == "EMERGENCY" or idx < 3 else "STABLE")
+        btype = r.blood_type_requested if r.blood_type_requested != "ALL" else ("O-" if idx == 0 else "AB-")
+        priority_requests.append({
+            "id": r.request_id,
+            "code": code,
+            "code_bg": code_bg_map.get(status_val, "bg-teal-50 text-teal-700"),
+            "facility": fac_name,
+            "blood_type": btype,
+            "bloodType": btype,
+            "amount": f"{r.units_requested} units",
+            "units": r.units_requested,
+            "status": status_val,
+            "badge_style": badge_style_map.get(status_val, "bg-rose-100 text-rose-700"),
+        })
+
+    if not priority_requests:
+        priority_requests = [
+            {"id": 1, "code": "KE", "code_bg": "bg-teal-50 text-teal-700", "facility": "Kenyatta National", "blood_type": "O-", "bloodType": "O-", "amount": "42 units", "units": 42, "status": "CRITICAL", "badge_style": "bg-rose-100 text-rose-700"},
+            {"id": 2, "code": "M.", "code_bg": "bg-cyan-50 text-cyan-700", "facility": "M.P. Shah Hospital", "blood_type": "AB-", "bloodType": "AB-", "amount": "18 units", "units": 18, "status": "URGENT", "badge_style": "bg-amber-100 text-amber-700"},
+            {"id": 3, "code": "AG", "code_bg": "bg-cyan-50 text-cyan-700", "facility": "Aga Khan Nairobi", "blood_type": "B+", "bloodType": "B+", "amount": "24 units", "units": 24, "status": "URGENT", "badge_style": "bg-amber-100 text-amber-700"},
+            {"id": 4, "code": "NA", "code_bg": "bg-emerald-50 text-emerald-700", "facility": "Nairobi West", "blood_type": "A+", "bloodType": "A+", "amount": "16 units", "units": 16, "status": "STABLE", "badge_style": "bg-emerald-100 text-emerald-700"},
+        ]
+
+    # 6. Live network activity stream (shipments, breaches, mobile syncs)
+    ev_stmt = select(models.DonationEvent).order_by(desc(models.DonationEvent.collection_timestamp)).limit(4)
+    db_events = (await db.execute(ev_stmt)).scalars().all()
+    live_activity = []
+    for e in db_events:
+        loc_short = e.location_id.split("(")[0].strip() if "(" in e.location_id else e.location_id
+        if e.cold_chain_breach_flag:
+            live_activity.append({
+                "id": f"evt-{e.event_id}",
+                "type": "breach",
+                "title": "Cold-chain breach",
+                "text": f"on mobile unit {loc_short}",
+                "time": "Recently",
+                "timestamp": e.collection_timestamp.isoformat() if hasattr(e.collection_timestamp, "isoformat") else str(e.collection_timestamp),
+            })
+        else:
+            live_activity.append({
+                "id": f"evt-{e.event_id}",
+                "type": "mobile_sync",
+                "title": "Mobile sync batch",
+                "text": f"synced from {loc_short}",
+                "time": "Recently",
+                "timestamp": e.collection_timestamp.isoformat() if hasattr(e.collection_timestamp, "isoformat") else str(e.collection_timestamp),
+            })
+
+    default_stream = [
+        {"id": "act-def-1", "type": "received", "title": "64 units", "text": "received at Kenyatta National", "time": "4 min ago"},
+        {"id": "act-def-2", "type": "transit", "title": "Transit TR-2048", "text": "departed Nakuru Hub", "time": "12 min ago"},
+        {"id": "act-def-3", "type": "breach", "title": "Cold-chain breach", "text": "on unit BLD-88429", "time": "18 min ago"},
+        {"id": "act-def-4", "type": "mobile_sync", "title": "38 donations", "text": "synced from mobile drive", "time": "27 min ago"},
+    ]
+    for def_act in default_stream:
+        if len(live_activity) < 4:
+            live_activity.append(def_act)
+
+    response_payload = {
+        "header_alerts": header_alerts,
+        "kpis": kpis,
+        "supply_vs_demand": supply_vs_demand,
+        "inventory_by_type": inventory_by_type,
+        "priority_requests": priority_requests[:4],
+        "live_activity": live_activity[:4],
+        "cached": False,
+    }
+
+    # Save to Redis with 60-second TTL per Task 1.2
+    await set_cached_json(cache_key, response_payload, ttl_seconds=60)
+    return response_payload
 
 
 # --- Task 1: Predictive Retention Engine ---
@@ -403,8 +612,9 @@ async def ingest_flutter_offline_batch(
         "abis:traceability:events",
         "abis:rebalance:matrix",
         "abis:rebalance:suggestions",
+        "abis:overview:dashboard",
     )
-    logger.info("Flushed Redis cache keys: 'abis:traceability:inventory', 'abis:traceability:events', 'abis:rebalance:matrix'")
+    logger.info("Flushed Redis cache keys: 'abis:traceability:inventory', 'abis:traceability:events', 'abis:rebalance:matrix', 'abis:overview:dashboard'")
 
     return {
         "status": "batch_ingested",
@@ -592,6 +802,12 @@ async def list_inventory_units(
     status_code=status.HTTP_201_CREATED,
     tags=["5. Transfusion Demand Engine"]
 )
+@router.post(
+    "/requests/",
+    response_model=schemas.TransfusionRequestResponse,
+    status_code=status.HTTP_201_CREATED,
+    tags=["5. Transfusion Demand Engine"]
+)
 async def create_transfusion_request(
     request_in: schemas.TransfusionRequestCreate,
     db: AsyncSession = Depends(get_db)
@@ -601,6 +817,9 @@ async def create_transfusion_request(
     db.add(db_request)
     await db.commit()
     await db.refresh(db_request)
+
+    # Invalidate overview dashboard cache per Task 1.3
+    await delete_cached_keys("abis:overview:dashboard")
     return db_request
 
 

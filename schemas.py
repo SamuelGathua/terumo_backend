@@ -180,3 +180,60 @@ class BatchManifestUpload(BaseModel):
     temperature: float = Field(4.2, description="Transit telemetry temperature in Celsius")
     cold_chain_breach: bool = Field(False, description="Flag for temperature excursion")
     barcode_records: List[BarcodeRecordItem] = Field(..., description="List of unit barcode records from remote drive")
+
+
+# --- 7. Overview Dashboard Aggregator Schemas ---
+class HeaderAlerts(BaseModel):
+    critical_shortages: int
+    active_breaches: int
+    total_alerts: int
+    summary: str
+
+class KpiMetric(BaseModel):
+    value: int
+    unit: str = "units"
+    change_pct: float
+    comparison_text: str
+    sparkline: List[float]
+
+class DashboardKpis(BaseModel):
+    total_inventory: KpiMetric
+    daily_collection_rate: KpiMetric
+    pending_requests: KpiMetric
+
+class SupplyDemandPoint(BaseModel):
+    date: str
+    supply_units: int
+    demand_units: int
+    supply: Optional[int] = None
+    demand: Optional[int] = None
+
+class PriorityRequestItem(BaseModel):
+    id: int
+    code: str
+    code_bg: Optional[str] = None
+    facility: str
+    blood_type: str
+    bloodType: Optional[str] = None
+    amount: str
+    units: int
+    status: str
+    badge_style: Optional[str] = None
+
+class LiveActivityItem(BaseModel):
+    id: str
+    type: str  # "received" | "transit" | "breach" | "mobile_sync"
+    title: str
+    text: str
+    time: str
+    timestamp: Optional[str] = None
+
+class OverviewSummaryResponse(BaseModel):
+    header_alerts: HeaderAlerts
+    kpis: DashboardKpis
+    supply_vs_demand: List[SupplyDemandPoint]
+    inventory_by_type: dict[str, int]
+    priority_requests: List[PriorityRequestItem]
+    live_activity: List[LiveActivityItem]
+    cached: Optional[bool] = False
+
