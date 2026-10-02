@@ -48,6 +48,20 @@ class Donor(Base):
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime, default=datetime.datetime.utcnow, nullable=False
     )
+    # --- Optional enrichment columns (migration: ALTER TABLE donors ADD COLUMN ... NULL) --------
+    # Activate richer model features when populated; ml_engine checks hasattr() before querying.
+    sex: Mapped[Optional[str]] = mapped_column(
+        String(1), nullable=True, default=None,
+        doc="Biological sex: M (male) or F (female). Affects donation eligibility interval."
+    )
+    donor_type: Mapped[Optional[str]] = mapped_column(
+        String(30), nullable=True, default=None,
+        doc="VOLUNTARY | FAMILY_REPLACEMENT | AUTOLOGOUS"
+    )
+    date_of_birth: Mapped[Optional[datetime.date]] = mapped_column(
+        Date, nullable=True, default=None,
+        doc="Date of birth (for age feature). Store in ISO 8601 format."
+    )
 
     # Relationships
     donation_events: Mapped[list["DonationEvent"]] = relationship(
@@ -204,6 +218,9 @@ class TransfusionRequest(Base):
     urgency_level: Mapped[str] = mapped_column(
         String(30), nullable=False, default="ROUTINE", doc="ROUTINE | EMERGENCY | MASS_TRANSFUSION"
     )
+    status: Mapped[Optional[str]] = mapped_column(
+        String(20), nullable=True, default="PENDING", doc="PENDING | FULFILLED | CANCELLED"
+    )
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime, default=datetime.datetime.utcnow, nullable=False
     )
@@ -233,6 +250,12 @@ class Facility(Base):
     longitude: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     inventory_capacity: Mapped[int] = mapped_column(Integer, nullable=False, default=500)
     current_inventory_units: Mapped[int] = mapped_column(Integer, nullable=False, default=50)
+    # KEPH level (1-6): enables tier-based demand baselines without an unreliable capacity proxy.
+    # Migration: ALTER TABLE facilities ADD COLUMN keph_level INTEGER NULL;
+    keph_level: Mapped[Optional[int]] = mapped_column(
+        Integer, nullable=True, default=None,
+        doc="Kenya Essential Package for Health tier (1=Community, 6=National Referral)."
+    )
 
     def __repr__(self) -> str:
         return f"<Facility(id='{self.id}', name='{self.name}', region='{self.region}')>"

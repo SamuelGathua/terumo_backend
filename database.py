@@ -61,10 +61,32 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
         finally:
             await session.close()
 
+def apply_column_migrations(sync_conn) -> None:
+    """Idempotently ensure required enrichment columns exist on both SQLite and PostgreSQL."""
+    from sqlalchemy import inspect, text
+    inspector = inspect(sync_conn)
+    tables = inspector.get_table_names()
+
+    migrations = [
+        ("donors", "sex", "VARCHAR(1)"),
+        ("donors", "donor_type", "VARCHAR(30)"),
+        ("donors", "date_of_birth", "DATE"),
+        ("facilities", "keph_level", "INTEGER"),
+        ("transfusion_requests", "status", "VARCHAR(20) DEFAULT 'PENDING'"),
+    ]
+
+    for table, col, col_type in migrations:
+        if table in tables:
+            existing_cols = [c["name"] for c in inspector.get_columns(table)]
+            if col not in existing_cols:
+                logger.info(f"Applying schema migration: adding {table}.{col} ({col_type})...")
+                sync_conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}"))
+
 async def init_db() -> None:
-    """Initialize database tables asynchronously."""
+    """Initialize database tables asynchronously and apply schema column migrations."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(apply_column_migrations)
 
 
 # 2. Redis Client & Caching Layer (redis.asyncio) with Resilient Local Memory Fallback

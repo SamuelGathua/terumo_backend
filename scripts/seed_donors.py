@@ -1,37 +1,39 @@
 """
-scripts/seed_donors.py - Asynchronous Synthetic Donor Data Generation Pipeline
+scripts/seed_donors.py - Asynchronous Event-First Synthetic Donor Ledger Seeder
 =============================================================================
 
-Generates 10,000 realistic donor records using Kernel Density Estimation (KDE)
-fitted on foundational seed data (data/blood_donor_dataset.csv and data/blood-format.csv).
+Generates 10,000 realistic donor records and their longitudinal donation event
+history using the latent-behaviour simulator (scripts/donor_simulation.py).
 
-Mathematical Constraints:
-    - tenure_days >= recency_days strictly enforced for logical validity.
-Clinical Constraints:
-    - ~5% of donors receive syphilis TPPA screening S/CO ratio >= 10.0 (high predictive value).
-    - ~95% receive safe, non-reactive ratios (0.10 - 2.50).
+Features and labels for predictive intelligence are derived dynamically from
+actual donation events rather than hardcoded synthetic formulas.
+
+Safety:
+    Guarded by scripts/db_utils.assert_safe_target(): refuses to wipe tables on
+    production/remote PostgreSQL databases unless ALLOW_DB_RESET=1 is explicitly set.
 """
 
+from __future__ import annotations
+
 import asyncio
-import datetime
 import logging
 import os
 import sys
-import uuid
-import numpy as np
-import pandas as pd
-from sklearn.neighbors import KernelDensity
-from sqlalchemy import insert, select, func
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from typing import Optional
 
-# Add parent directory to sys.path for direct script execution
+from sqlalchemy import delete, func, insert, select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+# Ensure backend root is on sys.path
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 BACKEND_DIR = os.path.dirname(CURRENT_DIR)
 if BACKEND_DIR not in sys.path:
     sys.path.insert(0, BACKEND_DIR)
 
-from models import Donor
-from database import Base
+from database import Base, apply_column_migrations
+from models import DonationEvent, Donor
+from scripts.db_utils import assert_safe_target, get_async_engine
+from scripts.donor_simulation import SimConfig, simulate_donor_ledger, validate_ledger
 
 logging.basicConfig(
     level=logging.INFO,
@@ -40,155 +42,83 @@ logging.basicConfig(
 logger = logging.getLogger("abis.seed_donors")
 
 
-def get_async_engine():
-    """Securely resolve the asynchronous database engine."""
-    raw_async_url = (
-        os.environ.get("ASYNC_DATABASE_URL")
-        or os.environ.get("DATABASE_URL")
-        or "sqlite+aiosqlite:///./blood_supply.db"
-    )
-
-    if raw_async_url.startswith("postgres://"):
-        async_url = raw_async_url.replace("postgres://", "postgresql+asyncpg://", 1)
-    elif raw_async_url.startswith("postgresql://") and not raw_async_url.startswith("postgresql+asyncpg://"):
-        async_url = raw_async_url.replace("postgresql://", "postgresql+asyncpg://", 1)
-    else:
-        async_url = raw_async_url
-
-    connect_args = {}
-    if "sqlite" in async_url:
-        connect_args["check_same_thread"] = False
-
-    return create_async_engine(async_url, echo=False, connect_args=connect_args)
-
-
-def load_and_fit_kde(dataset_path: str, format_path: str) -> tuple:
+async def generate_and_seed_donors(
+    n_donors: int = 10000,
+    history_days: int = 1460,
+    seed: int = 42,
+) -> dict:
     """
-    Load foundational seed data and fit a Kernel Density Estimation (KDE) model
-    on continuous behavioral RFM features (recency_days, total_donations, tenure_days).
+    Simulates longitudinal donor behavior and seeds donors and donation_events.
     """
-    logger.info(f"Loading seed data from {dataset_path} and {format_path}...")
-    donor_df = pd.read_csv(dataset_path)
-    format_df = pd.read_csv(format_path)
-
-    # Derive continuous RFM vectors from foundational seed records
-    # Tenure in days: months_since_first_donation * 30.4
-    tenure_days = np.clip(donor_df["months_since_first_donation"].values * 30.4, 30, 3650)
-    total_donations = np.clip(donor_df["number_of_donation"].values, 1, 100)
-
-    # In transfusion medicine, average interval between donations is ~90-120 days.
-    # We estimate baseline recency inversely correlated with donation frequency:
-    np.random.seed(42)
-    recency_days = np.clip(
-        tenure_days / (total_donations + np.random.uniform(0.5, 2.0, size=len(tenure_days))),
-        10,
-        tenure_days * 0.95
-    )
-
-    feature_matrix = np.column_stack([recency_days, total_donations, tenure_days])
-
-    # Fit Gaussian Kernel Density Estimation (bandwidth=1.5 standard for RFM domains)
-    logger.info("Fitting Gaussian Kernel Density Estimation (KDE) on RFM feature matrix...")
-    kde = KernelDensity(kernel="gaussian", bandwidth=1.5)
-    # Fit on sample for rapid convergence
-    sample_idx = np.random.choice(len(feature_matrix), size=min(2000, len(feature_matrix)), replace=False)
-    kde.fit(feature_matrix[sample_idx])
-
-    return kde, donor_df["blood_group"].values
-
-
-async def generate_and_seed_donors(n_samples: int = 10000):
-    """Generate 10,000 synthetic donor records and bulk insert into PostgreSQL."""
-    data_dir = os.path.join(BACKEND_DIR, "data")
-    dataset_path = os.path.join(data_dir, "blood_donor_dataset.csv")
-    format_path = os.path.join(data_dir, "blood-format.csv")
-
-    kde, blood_group_pool = load_and_fit_kde(dataset_path, format_path)
-
-    logger.info(f"Drawing {n_samples} synthetic samples from KDE distribution...")
-    raw_samples = kde.sample(n_samples, random_state=42)
-
-    # Post-processing and strict mathematical constraints enforcement:
-    recency_raw = np.clip(raw_samples[:, 0], 5, 1000).round()
-    donations_raw = np.clip(raw_samples[:, 1], 1, 80).round()
-    tenure_raw = np.clip(raw_samples[:, 2], 30, 4000).round()
-
-    # Mathematical Constraint: tenure_days MUST be strictly >= recency_days
-    tenure_days = np.maximum(tenure_raw, recency_raw + np.random.randint(5, 60, size=n_samples)).astype(int)
-    recency_days = recency_raw.astype(int)
-    total_donations = donations_raw.astype(int)
-
-    # Blood group sampling: realistic population distribution
-    blood_types = ["O+", "O-", "A+", "A-", "B+", "B-", "AB+", "AB-"]
-    blood_type_weights = [0.45, 0.04, 0.28, 0.03, 0.14, 0.02, 0.03, 0.01]
-    sampled_blood_types = np.random.choice(blood_types, p=blood_type_weights, size=n_samples)
-
-    # Clinical Constraint: Syphilis TPPA screening S/CO ratio
-    # Roughly 5% receive S/CO >= 10.0 (high positive predictive value)
-    # Remaining 95% receive safe range (0.10 - 2.50)
-    is_high_risk = np.random.rand(n_samples) < 0.05
-    syphilis_ratios = np.where(
-        is_high_risk,
-        np.random.uniform(10.0, 18.5, size=n_samples),
-        np.random.uniform(0.10, 2.50, size=n_samples)
-    ).round(2)
-
-    # Realistic clinical RFM behavioral retention model:
-    # High recency decay penalty, frequency habituation reward, and tenure loyalty
-    noise = np.random.normal(0, 0.35, size=n_samples)
-    logit = (
-        1.2
-        - 0.012 * recency_days
-        + 0.14 * total_donations
-        + 0.0005 * tenure_days
-        + noise
-    )
-    retention_prob = np.clip(1.0 / (1.0 + np.exp(-logit)), 0.02, 0.98).round(4)
-    retention_status = (retention_prob >= 0.50).astype(int)
-
-    logger.info("Constructing donor records payload...")
-    donor_records = []
-    base_time = datetime.datetime.utcnow()
-
-    for i in range(n_samples):
-        donor_records.append({
-            "donor_id": str(uuid.uuid4()),
-            "blood_type": str(sampled_blood_types[i]),
-            "tenure_days": int(tenure_days[i]),
-            "recency_days": int(recency_days[i]),
-            "total_donations": int(total_donations[i]),
-            "retention_probability": float(retention_prob[i]),
-            "retention_status": int(retention_status[i]),
-            "syphilis_s_co_ratio": float(syphilis_ratios[i]),
-            "created_at": base_time - datetime.timedelta(minutes=n_samples - i),
-        })
-
-    # Bulk insert into PostgreSQL via AsyncSession
     engine = get_async_engine()
+
+    # Safety Guard: refuse destructive wiping on non-SQLite databases without explicit confirmation
+    assert_safe_target(engine)
+
+    logger.info("Initializing database schema and checking enrichment columns...")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(apply_column_migrations)
+
+    # 1. Generate longitudinal behavior ledger
+    logger.info(f"Simulating event-first ledger for {n_donors} donors over {history_days} days (seed={seed})...")
+    cfg = SimConfig(n_donors=n_donors, history_days=history_days, seed=seed)
+    donors, events = simulate_donor_ledger(cfg)
+
+    # 2. Validate hard invariants
+    logger.info("Validating ledger invariants...")
+    stats = validate_ledger(donors, events)
+    logger.info("Ledger validated successfully: %s", stats)
+
+    # 3. Bulk insert via AsyncSession
     async_session = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
 
-    logger.info("Connecting to database and verifying tables...")
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
-        await conn.run_sync(Base.metadata.create_all)
-
-    logger.info(f"Bulk-inserting {len(donor_records)} donor records in batches of 2,500...")
-    chunk_size = 2500
     async with async_session() as session:
-        for idx in range(0, len(donor_records), chunk_size):
-            chunk = donor_records[idx:idx + chunk_size]
+        logger.info("Clearing existing donation_events and donors records...")
+        await session.execute(delete(DonationEvent))
+        await session.execute(delete(Donor))
+        await session.commit()
+
+        # Insert Donors
+        logger.info(f"Bulk-inserting {len(donors)} donor profiles in batches of 2,500...")
+        donor_batch_size = 2500
+        for i in range(0, len(donors), donor_batch_size):
+            chunk = donors[i : i + donor_batch_size]
             await session.execute(insert(Donor), chunk)
             await session.commit()
-            logger.info(f"Inserted batch {idx // chunk_size + 1} ({len(chunk)} records).")
+            logger.info(f"Inserted donor batch {i // donor_batch_size + 1} ({len(chunk)} records).")
 
-        # Verify count
-        count_stmt = select(func.count(Donor.donor_id))
-        total_in_db = (await session.execute(count_stmt)).scalar()
-        logger.info(f"Database population confirmed! Total donors in ledger: {total_in_db}")
+        # Insert Donation Events
+        logger.info(f"Bulk-inserting {len(events)} donation events in batches of 5,000...")
+        event_batch_size = 5000
+        for j in range(0, len(events), event_batch_size):
+            chunk = events[j : j + event_batch_size]
+            await session.execute(insert(DonationEvent), chunk)
+            await session.commit()
+            logger.info(f"Inserted event batch {j // event_batch_size + 1} ({len(chunk)} records).")
+
+        # Verification Queries
+        total_donors = (await session.execute(select(func.count(Donor.donor_id)))).scalar()
+        total_events = (await session.execute(select(func.count(DonationEvent.event_id)))).scalar()
+        synced_events = (
+            await session.execute(
+                select(func.count(DonationEvent.event_id)).where(DonationEvent.sync_status == "SYNCED")
+            )
+        ).scalar()
+
+        logger.info(
+            f"Seeding complete! Database online with {total_donors} donors, "
+            f"{total_events} total events ({synced_events} SYNCED)."
+        )
 
     await engine.dispose()
-    logger.info("scripts/seed_donors.py completed successfully.")
+    return {
+        "donors_seeded": total_donors,
+        "events_seeded": total_events,
+        "synced_events": synced_events,
+        "validation_stats": stats,
+    }
 
 
 if __name__ == "__main__":
-    asyncio.run(generate_and_seed_donors(10000))
+    asyncio.run(generate_and_seed_donors())

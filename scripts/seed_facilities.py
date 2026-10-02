@@ -53,36 +53,15 @@ BACKEND_DIR = os.path.dirname(CURRENT_DIR)
 if BACKEND_DIR not in sys.path:
     sys.path.insert(0, BACKEND_DIR)
 
-from database import Base
+from database import Base, apply_column_migrations
 from models import Facility, TransfusionRequest
+from scripts.db_utils import assert_safe_target, get_async_engine
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - [%(levelname)s] - %(name)s - %(message)s",
 )
 logger = logging.getLogger("abis.seed_facilities")
-
-
-def get_async_engine():
-    """Securely resolve the asynchronous database engine with PostgreSQL / SQLite support."""
-    raw_async_url = (
-        os.environ.get("ASYNC_DATABASE_URL")
-        or os.environ.get("DATABASE_URL")
-        or "sqlite+aiosqlite:///./blood_supply.db"
-    )
-
-    if raw_async_url.startswith("postgres://"):
-        async_url = raw_async_url.replace("postgres://", "postgresql+asyncpg://", 1)
-    elif raw_async_url.startswith("postgresql://") and not raw_async_url.startswith("postgresql+asyncpg://"):
-        async_url = raw_async_url.replace("postgresql://", "postgresql+asyncpg://", 1)
-    else:
-        async_url = raw_async_url
-
-    connect_args = {}
-    if "sqlite" in async_url:
-        connect_args["check_same_thread"] = False
-
-    return create_async_engine(async_url, echo=False, connect_args=connect_args)
 
 
 def parse_keph_tier(name: str, facility_type: str, keph_level_raw: str) -> str:
@@ -220,6 +199,7 @@ def simulate_demand_series(
             "blood_type_requested": blood_type,
             "units_requested": units_requested,
             "urgency_level": urgency,
+            "status": "FULFILLED",
             "created_at": datetime.datetime.utcnow(),
         })
 
@@ -289,6 +269,15 @@ async def seed_facilities_data(excel_path: Optional[str] = None):
         "Blood Hub": {"count": 0, "capacities": [], "demands": [], "inventories": []},
     }
 
+    tier_to_keph_level = {
+        "Level 6": 6,
+        "Level 5": 5,
+        "Level 4": 4,
+        "Level 3": 3,
+        "Level 2": 2,
+        "Blood Hub": None,
+    }
+
     # 1. Process Anchor Nodes
     for fac_id, meta in primary_anchors.items():
         cap, dem_mu, db_type = assign_tier_metrics(meta["tier"])
@@ -303,6 +292,7 @@ async def seed_facilities_data(excel_path: Optional[str] = None):
             "longitude": 0.0,
             "inventory_capacity": cap,
             "current_inventory_units": curr_inv,
+            "keph_level": tier_to_keph_level.get(meta["tier"]),
         })
 
         t = meta["tier"]
@@ -342,6 +332,7 @@ async def seed_facilities_data(excel_path: Optional[str] = None):
             "longitude": 0.0,
             "inventory_capacity": cap,
             "current_inventory_units": curr_inv,
+            "keph_level": tier_to_keph_level.get(tier),
         })
 
         tier_stats[tier]["count"] += 1
@@ -360,10 +351,15 @@ async def seed_facilities_data(excel_path: Optional[str] = None):
 
     logger.info("Connecting to database and verifying schema...")
     engine = get_async_engine()
+
+    # Safety Guard: refuse destructive wiping on non-SQLite databases without explicit confirmation
+    assert_safe_target(engine)
+
     async_session = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(apply_column_migrations)
 
     async with async_session() as session:
         # Overwrite existing mock facilities cleanly

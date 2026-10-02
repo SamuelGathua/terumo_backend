@@ -102,6 +102,7 @@ class TransfusionRequestBase(BaseModel):
     blood_type_requested: Optional[str] = Field("ALL", max_length=10)
     units_requested: int = Field(..., ge=0)
     urgency_level: Optional[str] = Field("ROUTINE", description="ROUTINE | EMERGENCY | MASS_TRANSFUSION")
+    status: Optional[str] = Field("PENDING", description="PENDING | FULFILLED | CANCELLED")
 
 class TransfusionRequestCreate(TransfusionRequestBase):
     pass
@@ -123,12 +124,20 @@ class RetentionPredictionRequest(BaseModel):
     recency_days: int = Field(..., ge=0, description="Recency in days since last donation.")
     frequency_total: int = Field(..., ge=1, description="Cumulative total donations.")
     tenure_days: int = Field(..., ge=0, description="Tenure in days since first donation.")
+    # Optional enrichment fields (activate additional model features when present)
+    sex: Optional[str] = Field(None, description="Biological sex: M or F (affects eligibility interval).")
+    donor_type: Optional[str] = Field(None, description="VOLUNTARY or FAMILY_REPLACEMENT.")
+    age_years: Optional[float] = Field(None, ge=16.0, le=70.0, description="Donor age in years.")
 
 class RetentionPredictionResponse(BaseModel):
     retention_probability: float = Field(..., ge=0.0, le=1.0)
     retention_status: int = Field(..., description="Binary classification (1 = Likely Retained, 0 = At Risk).")
-    risk_tier: str = Field(..., description="Risk categorization: LOW_RISK, MODERATE_RISK, HIGH_RISK.")
+    risk_tier: str = Field(..., description="Risk categorization: LOW_RISK, AT_RISK, HIGH_RISK.")
     recommended_action: str = Field(..., description="Clinical engagement recommendation for blood coordinator.")
+    # Extended fields from v2 engine
+    horizon_days: Optional[int] = Field(None, description="Forecast horizon in days the probability covers.")
+    days_until_eligible: Optional[int] = Field(None, description="Days until the donor is next eligible to donate.")
+    model_source: Optional[str] = Field(None, description="Model type used for the prediction.")
 
 class DemandForecastPoint(BaseModel):
     date: datetime.date
@@ -144,6 +153,13 @@ class DemandForecastResponse(BaseModel):
     forecast: List[DemandForecastPoint]
     rebalance_alert: Optional[str] = None
     cached: Optional[bool] = False
+    # Extended fields from v2 SARIMAX engine
+    forecast_start: Optional[str] = None
+    model: Optional[str] = None
+    interval_method: Optional[str] = None
+    alert_level: Optional[str] = None
+    history_days: Optional[int] = None
+    tier_basis: Optional[str] = None
 
 # --- Offline Sync Traceability Schemas ---
 class BloodUnitSyncItem(BaseModel):

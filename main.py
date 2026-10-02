@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -41,10 +42,14 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Startup migration notice: {e}")
 
-    logger.info("Initializing Predictive Intelligence Engine from database...")
+    logger.info("Initializing Predictive Intelligence Engine...")
     try:
-        metrics = await predictive_engine.initialize_from_db()
-        logger.info(f"Predictive Intelligence Engine online: {metrics.get('status')}")
+        # Load saved model if present; retrain in background otherwise to prevent Railway healthcheck timeouts
+        if predictive_engine._try_load_artifact():
+            logger.info(f"Loaded existing retention model: {predictive_engine.model_metrics.get('version')}")
+        else:
+            logger.info("No saved retention model found. Scheduling background training to prevent healthcheck timeout...")
+            asyncio.create_task(predictive_engine.initialize_from_db(force_retrain=True))
     except Exception as e:
         logger.warning(f"Could not complete model initialization on startup: {e}. Heuristic fallback active.")
 

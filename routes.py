@@ -1,7 +1,9 @@
+import asyncio
 import datetime
 import logging
-from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
+import os
+from typing import Any, Dict, List, Optional
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Path, Query, status
 from sqlalchemy import desc, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 import pandas as pd
@@ -9,7 +11,7 @@ import pandas as pd
 from database import get_db, get_cached_json, set_cached_json, delete_cached_keys
 import models
 import schemas
-from ml_engine import predictive_engine
+from ml_engine import predictive_engine, UnknownFacilityError
 
 logger = logging.getLogger("abis.routes")
 router = APIRouter()
@@ -248,6 +250,7 @@ async def predict_donor_retention(
     """
     Predict donor return probability based on Recency, Frequency, and Tenure (RFM).
     Uses the trained Random Forest classifier with clinical risk tiering.
+    Optional fields sex, donor_type, age_years activate additional model features when present.
     """
     # Ensure model is initialized if not yet trained
     if not predictive_engine.is_trained:
@@ -256,9 +259,39 @@ async def predict_donor_retention(
     prediction = predictive_engine.predict_donor_retention(
         recency_days=payload.recency_days,
         total_donations=payload.frequency_total,
-        tenure_days=payload.tenure_days
+        tenure_days=payload.tenure_days,
+        sex=getattr(payload, "sex", None),
+        donor_type=getattr(payload, "donor_type", None),
+        age_years=getattr(payload, "age_years", None),
     )
     return schemas.RetentionPredictionResponse(**prediction)
+
+
+_training_lock = asyncio.Lock()
+
+
+def verify_admin_auth(
+    x_admin_key: Optional[str] = Header(None, alias="X-Admin-Key"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+) -> None:
+    """Enforces admin authentication in production environments per AGENTS.md."""
+    environment = os.getenv("ENVIRONMENT", "development").lower()
+    if environment == "production":
+        secret = os.getenv("SECRET_KEY")
+        token = x_admin_key
+        if not token and authorization and authorization.startswith("Bearer "):
+            token = authorization.split(" ", 1)[1]
+        if not token or token != secret:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Unauthorized: Admin credentials required to trigger model training."
+            )
+
+
+async def _execute_retention_training() -> Dict[str, Any]:
+    async with _training_lock:
+        logger.info("Executing retention model training under background lock...")
+        return await predictive_engine.initialize_from_db(force_retrain=True)
 
 
 @router.get(
@@ -267,6 +300,7 @@ async def predict_donor_retention(
 )
 async def get_retention_model_metrics():
     """Retrieve evaluation metrics for the trained Random Forest donor retention model."""
+    predictive_engine.reload_if_newer()
     if not predictive_engine.is_trained:
         await predictive_engine.initialize_from_db()
     return predictive_engine.model_metrics
@@ -280,9 +314,43 @@ async def get_retention_model_metrics():
     "/predict/retention/train",
     tags=["Predictive Intelligence"]
 )
-async def retrain_donor_retention_model():
-    """Trigger on-demand retraining of the Random Forest donor retention model."""
-    metrics = await predictive_engine.initialize_from_db()
+async def retrain_donor_retention_model(
+    background_tasks: BackgroundTasks,
+    background: bool = Query(False, description="Run training as a background task to prevent proxy timeouts"),
+    _: None = Depends(verify_admin_auth),
+):
+    """
+    Trigger on-demand retraining of the Random Forest donor retention model (force_retrain=True).
+    Guarded by admin authentication and concurrency lock.
+    If background=True, starts training asynchronously and returns immediately.
+    """
+    if _training_lock.locked():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Model retraining is already in progress. Please wait for the current run to finish."
+        )
+
+    if background:
+        background_tasks.add_task(_execute_retention_training)
+        return {
+            "status": "training_scheduled",
+            "message": "Donor retention model retraining started as a background task.",
+            "data_source": os.getenv("ABIS_DATA_SOURCE", "synthetic"),
+        }
+
+    async with _training_lock:
+        metrics = await predictive_engine.initialize_from_db(force_retrain=True)
+
+    if metrics.get("status") == "uninitialized":
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "error": "Retention model uninitialized",
+                "reason": metrics.get("reason"),
+                "model_source": metrics.get("model_source"),
+                "hint": "Ensure donation_events are seeded before training.",
+            }
+        )
     return metrics
 
 
@@ -298,7 +366,8 @@ async def predict_blood_demand_by_facility(
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Project daily blood demand for the next 7 days using ARIMA time-series modeling.
+    Project daily blood demand for the next 7 days using SARIMAX time-series modeling.
+    Facility ID must exist in the facilities table (HTTP 404 if not).
     Wrapped in an asynchronous Redis cache layer with a 15-minute (900 seconds) TTL.
     """
     cache_key = f"abis:forecast:{facility_id}:{horizon_days}"
@@ -310,17 +379,25 @@ async def predict_blood_demand_by_facility(
         logger.info(f"Redis Cache HIT for key '{cache_key}'")
         return schemas.DemandForecastResponse(**cached_result)
 
-    logger.info(f"Redis Cache MISS for key '{cache_key}'. Executing ARIMA time-series forecast...")
+    logger.info(f"Redis Cache MISS for key '{cache_key}'. Executing SARIMAX time-series forecast...")
 
-    # 2. Compute ARIMA Forecast via ml_engine
-    forecast_data = await predictive_engine.forecast_facility_demand(
-        facility_id=facility_id,
-        horizon_days=horizon_days
-    )
+    # 2. Compute Forecast via ml_engine (raises UnknownFacilityError for unknown IDs)
+    try:
+        forecast_data = await predictive_engine.forecast_facility_demand(
+            facility_id=facility_id,
+            horizon_days=horizon_days,
+            use_cache=False,  # Redis layer is handled here, not inside the engine
+        )
+    except UnknownFacilityError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Facility '{facility_id}' not found in the facilities ledger. "
+                   "Register the facility via POST /api/facilities/ before requesting a forecast.",
+        )
     forecast_data["cached"] = False
 
-    # 3. Store JSON result in Redis with a 3600-second (1 hour) TTL per Task 1.1
-    await set_cached_json(cache_key, forecast_data, ttl_seconds=3600)
+    # 3. Store JSON result in Redis with a 900-second (15 min) TTL per Task 1.1
+    await set_cached_json(cache_key, forecast_data, ttl_seconds=900)
 
     return schemas.DemandForecastResponse(**forecast_data)
 

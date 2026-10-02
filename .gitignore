@@ -14,3 +14,5 @@ build/
 *.egg-info/
 synthetic_donor_ledger.csv
 historical_transfusions.csv
+model_store/
+*.joblib
